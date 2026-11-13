@@ -5,9 +5,12 @@ description = "Course-grounded revision sheets prepared by a local model"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28",
+    "psycopg[binary,pool]>=3.2",
+    "pydantic>=2.9",
 ]
 
 [project.scripts]
+skoolathome = "skoolathome.cli:main"
 skoolathome-ed-probe = "skoolathome.collectors.ecoledirecte.probe:main"
 
 [dependency-groups]

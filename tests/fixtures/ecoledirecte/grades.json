@@ -1,0 +1,790 @@
+{
+  "code": 200,
+  "host": "host-x",
+  "data": {
+    "foStat": "foStat-x",
+    "periodes": [
+      {
+        "idPeriode": "idPeriode-x",
+        "codePeriode": "A001",
+        "periode": "periode-x",
+        "annuel": false,
+        "dateDebut": "2026-09-04",
+        "dateFin": "2026-12-17",
+        "examenBlanc": false,
+        "cloture": false,
+        "dateConseil": "2026-12-09",
+        "heureConseil": "heureConseil-x",
+        "moyNbreJoursApresConseil": 10,
+        "ensembleMatieres": {
+          "dateCalcul": "",
+          "moyenneGenerale": "moyenneGenerale-x",
+          "moyenneClasse": "moyenneClasse-x",
+          "moyenneMin": "moyenneMin-x",
+          "moyenneMax": "moyenneMax-x",
+          "nomPP": "nomPP-x",
+          "nomCE": "",
+          "decisionDuConseil": "",
+          "disciplines": [
+            {
+              "id": 1010,
+              "codeMatiere": "AGL1",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1011,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1012,
+              "codeMatiere": "ESP2",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1013,
+                  "nom": "nom-x"
+                },
+                {
+                  "id": 1014,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1015,
+              "codeMatiere": "FRANC",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1016,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1017,
+              "codeMatiere": "LCALA",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1018,
+                  "nom": "nom-x"
+                }
+              ]
+            }
+          ],
+          "disciplinesSimulation": []
+        }
+      },
+      {
+        "idPeriode": "idPeriode-x",
+        "codePeriode": "A002",
+        "periode": "periode-x",
+        "annuel": false,
+        "dateDebut": "2026-12-18",
+        "dateFin": "2027-03-17",
+        "examenBlanc": false,
+        "cloture": false,
+        "dateConseil": "2027-03-16",
+        "heureConseil": "heureConseil-x",
+        "moyNbreJoursApresConseil": 10,
+        "ensembleMatieres": {
+          "dateCalcul": "",
+          "moyenneGenerale": "moyenneGenerale-x",
+          "moyenneClasse": "moyenneClasse-x",
+          "moyenneMin": "moyenneMin-x",
+          "moyenneMax": "moyenneMax-x",
+          "nomPP": "nomPP-x",
+          "nomCE": "",
+          "decisionDuConseil": "",
+          "disciplines": [
+            {
+              "id": 1010,
+              "codeMatiere": "AGL1",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1011,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1012,
+              "codeMatiere": "ESP2",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1013,
+                  "nom": "nom-x"
+                },
+                {
+                  "id": 1014,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1015,
+              "codeMatiere": "FRANC",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1016,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1017,
+              "codeMatiere": "LCALA",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1018,
+                  "nom": "nom-x"
+                }
+              ]
+            }
+          ],
+          "disciplinesSimulation": []
+        }
+      },
+      {
+        "idPeriode": "idPeriode-x",
+        "codePeriode": "A003",
+        "periode": "periode-x",
+        "annuel": false,
+        "dateDebut": "2027-03-18",
+        "dateFin": "2027-07-04",
+        "examenBlanc": false,
+        "cloture": false,
+        "dateConseil": "2027-06-19",
+        "heureConseil": "heureConseil-x",
+        "moyNbreJoursApresConseil": 10,
+        "ensembleMatieres": {
+          "dateCalcul": "",
+          "moyenneGenerale": "moyenneGenerale-x",
+          "moyenneClasse": "moyenneClasse-x",
+          "moyenneMin": "moyenneMin-x",
+          "moyenneMax": "moyenneMax-x",
+          "nomPP": "nomPP-x",
+          "nomCE": "",
+          "decisionDuConseil": "",
+          "disciplines": [
+            {
+              "id": 1010,
+              "codeMatiere": "AGL1",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1011,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1012,
+              "codeMatiere": "ESP2",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1013,
+                  "nom": "nom-x"
+                },
+                {
+                  "id": 1014,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1015,
+              "codeMatiere": "FRANC",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1016,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1017,
+              "codeMatiere": "LCALA",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "moyenne": "",
+              "moyenneClasse": "",
+              "moyenneMin": "",
+              "moyenneMax": "",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1018,
+                  "nom": "nom-x"
+                }
+              ]
+            }
+          ],
+          "disciplinesSimulation": []
+        }
+      },
+      {
+        "idPeriode": "idPeriode-x",
+        "codePeriode": "A999Z",
+        "periode": "periode-x",
+        "annuel": true,
+        "dateDebut": "2026-09-04",
+        "dateFin": "2027-07-04",
+        "examenBlanc": false,
+        "cloture": false,
+        "moyNbreJoursApresConseil": 10,
+        "ensembleMatieres": {
+          "dateCalcul": "2026-11-13 02:02",
+          "nomPP": "nomPP-x",
+          "nomCE": "",
+          "decisionDuConseil": "",
+          "disciplines": [
+            {
+              "id": 1010,
+              "codeMatiere": "AGL1",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "coef": 0,
+              "effectif": 31,
+              "rang": 26,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1011,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1012,
+              "codeMatiere": "ESP2",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "coef": 0,
+              "effectif": 16,
+              "rang": 11,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1013,
+                  "nom": "nom-x"
+                },
+                {
+                  "id": 1014,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1015,
+              "codeMatiere": "FRANC",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "coef": 0,
+              "effectif": 31,
+              "rang": 19,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1016,
+                  "nom": "nom-x"
+                }
+              ]
+            },
+            {
+              "id": 1017,
+              "codeMatiere": "LCALA",
+              "codeSousMatiere": "",
+              "discipline": "discipline-x",
+              "coef": 0,
+              "effectif": 0,
+              "rang": 0,
+              "groupeMatiere": false,
+              "idGroupeMatiere": 0,
+              "option": 0,
+              "sousMatiere": false,
+              "saisieAppreciationSSMat": false,
+              "professeurs": [
+                {
+                  "id": 1018,
+                  "nom": "nom-x"
+                }
+              ]
+            }
+          ],
+          "disciplinesSimulation": []
+        }
+      }
+    ],
+    "notes": [
+      {
+        "id": 1019,
+        "devoir": "devoir-x",
+        "codePeriode": "A001",
+        "codeMatiere": "MATHS",
+        "libelleMatiere": "libelleMatiere-x",
+        "codeSousMatiere": "",
+        "typeDevoir": "Interrogation",
+        "enLettre": false,
+        "commentaire": "",
+        "uncSujet": "",
+        "uncCorrige": "",
+        "date": "2026-09-15",
+        "dateSaisie": "2026-09-19",
+        "coef": "0.25",
+        "noteSur": "10",
+        "valeur": "12,5",
+        "valeurisee": false,
+        "nonSignificatif": false,
+        "moyenneClasse": "moyenneClasse-x",
+        "minClasse": "minClasse-x",
+        "maxClasse": "maxClasse-x",
+        "elementsProgramme": [
+          {
+            "descriptif": "descriptif-x",
+            "idElemProg": 1020,
+            "valeur": "12,5",
+            "cdt": false,
+            "idCompetence": 1021,
+            "idConnaissance": 0,
+            "libelleCompetence": "libelleCompetence-x",
+            "afc": 0
+          },
+          {
+            "descriptif": "descriptif-x",
+            "idElemProg": 1022,
+            "valeur": "12,5",
+            "cdt": false,
+            "idCompetence": 1023,
+            "idConnaissance": 0,
+            "libelleCompetence": "libelleCompetence-x",
+            "afc": 0
+          }
+        ]
+      },
+      {
+        "id": 1024,
+        "devoir": "devoir-x",
+        "codePeriode": "A001",
+        "codeMatiere": "AGL1",
+        "libelleMatiere": "libelleMatiere-x",
+        "codeSousMatiere": "",
+        "typeDevoir": "Contrôle",
+        "enLettre": false,
+        "commentaire": "",
+        "uncSujet": "",
+        "uncCorrige": "",
+        "date": "2026-09-17",
+        "dateSaisie": "2026-09-24",
+        "coef": "1",
+        "noteSur": "20",
+        "valeur": "12,5",
+        "valeurisee": false,
+        "nonSignificatif": false,
+        "moyenneClasse": "moyenneClasse-x",
+        "minClasse": "minClasse-x",
+        "maxClasse": "maxClasse-x",
+        "elementsProgramme": []
+      },
+      {
+        "id": 1025,
+        "devoir": "devoir-x",
+        "codePeriode": "A001",
+        "codeMatiere": "FRANC",
+        "libelleMatiere": "libelleMatiere-x",
+        "codeSousMatiere": "",
+        "typeDevoir": "Interrogation",
+        "enLettre": false,
+        "commentaire": "",
+        "uncSujet": "",
+        "uncCorrige": "",
+        "date": "2026-09-18",
+        "dateSaisie": "2026-09-18",
+        "coef": "1",
+        "noteSur": "0",
+        "valeur": "",
+        "valeurisee": false,
+        "nonSignificatif": false,
+        "moyenneClasse": "",
+        "minClasse": "",
+        "maxClasse": "",
+        "elementsProgramme": [
+          {
+            "descriptif": "descriptif-x",
+            "idElemProg": 1026,
+            "valeur": "12,5",
+            "cdt": false,
+            "idCompetence": 1027,
+            "idConnaissance": 0,
+            "libelleCompetence": "libelleCompetence-x",
+            "afc": 0
+          }
+        ]
+      },
+      {
+        "id": 1028,
+        "devoir": "devoir-x",
+        "codePeriode": "A001",
+        "codeMatiere": "FRANC",
+        "libelleMatiere": "libelleMatiere-x",
+        "codeSousMatiere": "",
+        "typeDevoir": "Interrogation",
+        "enLettre": false,
+        "commentaire": "",
+        "uncSujet": "",
+        "uncCorrige": "",
+        "date": "2026-09-22",
+        "dateSaisie": "2026-09-22",
+        "coef": "1",
+        "noteSur": "20",
+        "valeur": "12,5",
+        "valeurisee": false,
+        "nonSignificatif": false,
+        "moyenneClasse": "moyenneClasse-x",
+        "minClasse": "minClasse-x",
+        "maxClasse": "maxClasse-x",
+        "elementsProgramme": [
+          {
+            "descriptif": "descriptif-x",
+            "idElemProg": 1029,
+            "valeur": "12,5",
+            "cdt": false,
+            "idCompetence": 1030,
+            "idConnaissance": 0,
+            "libelleCompetence": "libelleCompetence-x",
+            "afc": 0
+          }
+        ]
+      }
+    ],
+    "parametrage": {
+      "couleurEval1": "couleurEval1-x",
+      "couleurEval2": "couleurEval2-x",
+      "couleurEval3": "couleurEval3-x",
+      "couleurEval4": "couleurEval4-x",
+      "libelleEval1": "libelleEval1-x",
+      "libelleEval2": "libelleEval2-x",
+      "libelleEval3": "libelleEval3-x",
+      "libelleEval4": "libelleEval4-x",
+      "affichageMoyenne": true,
+      "affichageMoyenneDevoir": true,
+      "affichagePositionMatiere": false,
+      "affichageOngletCompetence": 1,
+      "affichageNote": true,
+      "affichageCompetence": true,
+      "affichageEvaluationsComposantes": false,
+      "affichageGraphiquesComposantes": true,
+      "modeCalculGraphiquesComposantes": "modeCalculGraphiquesComposantes-x",
+      "affichageCompNum": false,
+      "libelleEvalCompNum1": "libelleEvalCompNum1-x",
+      "libelleEvalCompNum2": "libelleEvalCompNum2-x",
+      "libelleEvalCompNum3": "libelleEvalCompNum3-x",
+      "affichageAppreciation": false,
+      "appreciationsProf": false,
+      "appreciationProfPrinc": false,
+      "affichageMention": false,
+      "affichageAppreciationCE": false,
+      "affichageAppreciationVS": false,
+      "affichageAppreciationCN": false,
+      "affichageAppreciationClasse": false,
+      "affichageAppreciationPeriodeCloturee": false,
+      "moyenneUniquementPeriodeCloture": false,
+      "moyennePeriodeReleve": false,
+      "moyennePeriodeAnnuelle": false,
+      "moyennePeriodeHorsP": false,
+      "moyenneEleveDansNotes": true,
+      "moyenneEleve": true,
+      "moyenneEleveDansMoyenne": true,
+      "moyenneGenerale": false,
+      "moyenneCoefMatiere": false,
+      "moyenneClasse": true,
+      "moyenneMin": true,
+      "moyenneMax": true,
+      "moyenneRang": false,
+      "moyenneSur": 20,
+      "moyenneGraphique": false,
+      "moyennesSimulation": false,
+      "coefficientNote": true,
+      "colonneCoefficientMatiere": false,
+      "noteGrasSousMoyenne": true,
+      "noteGrasAudessusMoyenne": false,
+      "libelleDevoir": true,
+      "dateDevoir": true,
+      "typeDevoir": true,
+      "noteUniquementPeriodeCloture": false,
+      "notePeriodeReleve": false,
+      "notePeriodeAnnuelle": false,
+      "notePeriodeHorsP": false,
+      "libellesAppreciations": [
+        "libellesAppreciations-x"
+      ],
+      "appreciationsParametrage": [
+        {
+          "code": "code-x",
+          "id": 1031,
+          "nbMaxCaractere": 500,
+          "libelle": "libelle-x"
+        }
+      ]
+    },
+    "LSUN": {
+      "A001": [
+        {
+          "cdt": false,
+          "codeMatiere": "AGL1",
+          "libelleMatiere": "libelleMatiere-x",
+          "isFirstOfMatiere": true,
+          "nbElemProgMatiere": 1,
+          "codeSousMatiere": "",
+          "libelleSousMatiere": "",
+          "isFirstOfSousMatiere": false,
+          "nbElemProgSousMatiere": 0,
+          "libelleElementProgramme": "libelleElementProgramme-x",
+          "idElemProg": 1032,
+          "valeur": "12,5",
+          "afc": 1,
+          "professeurs": [
+            {
+              "id": 1011,
+              "nom": "nom-x"
+            }
+          ]
+        },
+        {
+          "cdt": false,
+          "codeMatiere": "FRANC",
+          "libelleMatiere": "libelleMatiere-x",
+          "isFirstOfMatiere": true,
+          "nbElemProgMatiere": 6,
+          "codeSousMatiere": "",
+          "libelleSousMatiere": "",
+          "isFirstOfSousMatiere": false,
+          "nbElemProgSousMatiere": 0,
+          "libelleElementProgramme": "libelleElementProgramme-x",
+          "idElemProg": 1033,
+          "valeur": "12,5",
+          "afc": 0,
+          "professeurs": [
+            {
+              "id": 1016,
+              "nom": "nom-x"
+            }
+          ]
+        },
+        {
+          "cdt": false,
+          "codeMatiere": "FRANC",
+          "libelleMatiere": "libelleMatiere-x",
+          "isFirstOfMatiere": false,
+          "nbElemProgMatiere": 6,
+          "codeSousMatiere": "",
+          "libelleSousMatiere": "",
+          "isFirstOfSousMatiere": false,
+          "nbElemProgSousMatiere": 0,
+          "libelleElementProgramme": "libelleElementProgramme-x",
+          "idElemProg": 1026,
+          "valeur": "12,5",
+          "afc": 0,
+          "professeurs": [
+            {
+              "id": 1016,
+              "nom": "nom-x"
+            }
+          ]
+        },
+        {
+          "cdt": false,
+          "codeMatiere": "FRANC",
+          "libelleMatiere": "libelleMatiere-x",
+          "isFirstOfMatiere": false,
+          "nbElemProgMatiere": 6,
+          "codeSousMatiere": "",
+          "libelleSousMatiere": "",
+          "isFirstOfSousMatiere": false,
+          "nbElemProgSousMatiere": 0,
+          "libelleElementProgramme": "libelleElementProgramme-x",
+          "idElemProg": 1029,
+          "valeur": "12,5",
+          "afc": 0,
+          "professeurs": [
+            {
+              "id": 1016,
+              "nom": "nom-x"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

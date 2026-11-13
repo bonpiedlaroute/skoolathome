@@ -1,0 +1,31 @@
+# Local application database. Kept separate from the Langfuse stack (T14),
+# so Langfuse can be upgraded or wiped without touching the student's data.
+name: skoolathome
+
+services:
+  app-db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skoolathome
+      POSTGRES_DB: skoolathome
+      POSTGRES_PASSWORD_FILE: /run/secrets/app_db_password
+    secrets:
+      - app_db_password
+    ports:
+      - "127.0.0.1:5433:5432" # 5433: no clash with another local Postgres
+    volumes:
+      - app-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skoolathome -d skoolathome"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+secrets:
+  app_db_password:
+    # Outside the repository, mode 600. Created once, see tmp/T03-postgres-local.md.
+    file: ${SKOOLATHOME_SECRETS:-${HOME}/.config/skoolathome}/app-db-password
+
+volumes:
+  app-db-data:

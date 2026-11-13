@@ -1,0 +1,14 @@
+# Evening run: collect École Directe, then write the summary and notify.
+# Install: see tmp/T06-controles-et-minuteur.md
+[Unit]
+Description=skoolathome evening run (collect and summary)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/boulot/dev/skoolathome
+ExecStart=%h/.local/bin/uv run --frozen skoolathome evening
+# One attempt per evening: never retry a login in a loop.
+Restart=no
+TimeoutStartSec=15min

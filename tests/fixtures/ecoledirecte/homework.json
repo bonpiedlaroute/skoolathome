@@ -1,0 +1,86 @@
+{
+  "code": 200,
+  "host": "host-x",
+  "data": {
+    "2026-11-13": [
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "SVT",
+        "aFaire": true,
+        "idDevoir": 1004,
+        "documentsAFaire": false,
+        "donneLe": "2026-11-10",
+        "effectue": true,
+        "interrogation": false,
+        "rendreEnLigne": false,
+        "tags": []
+      },
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "MATHS",
+        "aFaire": true,
+        "idDevoir": 1005,
+        "documentsAFaire": false,
+        "donneLe": "2026-11-10",
+        "effectue": true,
+        "interrogation": false,
+        "rendreEnLigne": false,
+        "tags": []
+      }
+    ],
+    "2026-11-16": [
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "MATHS",
+        "aFaire": true,
+        "idDevoir": 1006,
+        "documentsAFaire": true,
+        "donneLe": "2026-11-04",
+        "effectue": false,
+        "interrogation": false,
+        "rendreEnLigne": false,
+        "tags": []
+      },
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "FRANC",
+        "aFaire": true,
+        "idDevoir": 1007,
+        "documentsAFaire": false,
+        "donneLe": "2026-10-09",
+        "effectue": false,
+        "interrogation": true,
+        "rendreEnLigne": false,
+        "tags": []
+      }
+    ],
+    "2026-11-17": [
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "PH-CH",
+        "aFaire": true,
+        "idDevoir": 1008,
+        "documentsAFaire": false,
+        "donneLe": "2026-11-04",
+        "effectue": true,
+        "interrogation": false,
+        "rendreEnLigne": false,
+        "tags": []
+      }
+    ],
+    "2026-11-18": [
+      {
+        "matiere": "matiere-x",
+        "codeMatiere": "PH-CH",
+        "aFaire": true,
+        "idDevoir": 1009,
+        "documentsAFaire": false,
+        "donneLe": "2026-10-26",
+        "effectue": false,
+        "interrogation": true,
+        "rendreEnLigne": false,
+        "tags": []
+      }
+    ]
+  }
+}

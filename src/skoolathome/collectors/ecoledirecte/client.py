@@ -93,7 +93,7 @@ class EcoleDirecteClient:
         self._username = username
         self._password = password
         self.device = device
-        self._version = version
+        self.version = version
         self._http = httpx.Client(
             base_url=API_URL,
             headers={
@@ -144,7 +144,7 @@ class EcoleDirecteClient:
             payload["cv"] = self.device.cv
             payload["fa"] = [{"cn": self.device.cn, "cv": self.device.cv}]
         response = self._http.post(
-            "/login.awp", params={"v": self._version}, content=_body(payload)
+            "/login.awp", params={"v": self.version}, content=_body(payload)
         )
         self._http.headers.pop("x-gtk", None)
         body = self._json(response)
@@ -153,7 +153,7 @@ class EcoleDirecteClient:
 
     def _fetch_gtk(self) -> None:
         self._http.headers.pop("x-gtk", None)
-        response = self._http.get("/login.awp", params={"v": self._version, "gtk": 1})
+        response = self._http.get("/login.awp", params={"v": self.version, "gtk": 1})
         gtk = response.cookies.get("GTK") or self._http.cookies.get("GTK")
         if not gtk:
             raise EcoleDirecteError(0, "cookie GTK absent : la connexion a peut-être changé")
@@ -179,7 +179,7 @@ class EcoleDirecteClient:
     def _call(self, path: str, *, verb: str = "get", payload: dict | None = None) -> dict:
         response = self._http.post(
             path,
-            params={"verbe": verb, "v": self._version},
+            params={"verbe": verb, "v": self.version},
             content=_body(payload or {}),
         )
         body = self._json(response)

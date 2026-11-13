@@ -1,0 +1,113 @@
+{
+  "code": 200,
+  "host": "host-x",
+  "data": {
+    "date": "2026-11-04",
+    "matieres": [
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "EDMUS",
+        "nomProf": "nomProf-x",
+        "id": 1056,
+        "interrogation": true,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1056,
+          "contenu": "PHA+Q29udGVudSAxNzwvcD4=",
+          "rendreEnLigne": false,
+          "donneLe": "2026-10-12",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "",
+            "documents": []
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1056,
+          "contenu": "",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "PH-CH",
+        "nomProf": "nomProf-x",
+        "id": 1057,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1057,
+          "contenu": "PHA+Q29udGVudSAxODwvcD4=",
+          "rendreEnLigne": false,
+          "donneLe": "2026-10-26",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "",
+            "documents": []
+          },
+          "qcm": {
+            "idQCM": 1058,
+            "idAssociation": 1059,
+            "titre": "titre-x",
+            "debute": "2026-11-03 16:56:10",
+            "fini": "2026-11-03 17:01:16"
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1057,
+          "contenu": "PHA+Q29udGVudSAxOTwvcD4=",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "HI-GE",
+        "nomProf": "nomProf-x",
+        "id": 1060,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "contenuDeSeance": {
+          "idDevoir": 1060,
+          "contenu": "PHA+Q29udGVudSAyMDwvcD4=",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      }
+    ]
+  }
+}

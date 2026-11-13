@@ -1,0 +1,11 @@
+[Unit]
+Description=skoolathome evening run, every day
+
+[Timer]
+OnCalendar=*-*-* 20:30
+# Laptop off at 20:30: run once at next start instead.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

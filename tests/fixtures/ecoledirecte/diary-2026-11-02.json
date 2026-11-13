@@ -1,0 +1,188 @@
+{
+  "code": 200,
+  "host": "host-x",
+  "data": {
+    "date": "2026-11-02",
+    "matieres": [
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "MATHS",
+        "nomProf": "nomProf-x",
+        "id": 1034,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1034,
+          "contenu": "PHA+Q29udGVudSAxPC9wPg==",
+          "rendreEnLigne": false,
+          "donneLe": "2026-10-15",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [
+            {
+              "id": 1035,
+              "libelle": "libelle-x",
+              "date": "2026-10-19",
+              "taille": 548563,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            }
+          ],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "PHA+Q29udGVudSAyPC9wPg==",
+            "documents": []
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1034,
+          "contenu": "PHA+Q29udGVudSAzPC9wPg==",
+          "documents": [
+            {
+              "id": 1036,
+              "libelle": "libelle-x",
+              "date": "2026-10-31",
+              "taille": 220578,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1037,
+              "libelle": "libelle-x",
+              "date": "2026-10-31",
+              "taille": 32004,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1038,
+              "libelle": "libelle-x",
+              "date": "2026-10-31",
+              "taille": 13872,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1039,
+              "libelle": "libelle-x",
+              "date": "2026-10-31",
+              "taille": 122061,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            }
+          ],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "AGL1",
+        "nomProf": "nomProf-x",
+        "id": 1040,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1040,
+          "contenu": "PHA+Q29udGVudSA0PC9wPg==",
+          "rendreEnLigne": false,
+          "donneLe": "2026-10-16",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "PHA+Q29udGVudSA1PC9wPg==",
+            "documents": []
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1040,
+          "contenu": "PHA+Q29udGVudSA2PC9wPg==",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "FRANC",
+        "nomProf": "nomProf-x",
+        "id": 1041,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "contenuDeSeance": {
+          "idDevoir": 1041,
+          "contenu": "PHA+Q29udGVudSA3PC9wPg==",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "HI-GE",
+        "nomProf": "nomProf-x",
+        "id": 1042,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "contenuDeSeance": {
+          "idDevoir": 1042,
+          "contenu": "",
+          "documents": [
+            {
+              "id": 1043,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 18364,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            }
+          ],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      }
+    ]
+  }
+}

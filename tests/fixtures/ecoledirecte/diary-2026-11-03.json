@@ -1,0 +1,276 @@
+{
+  "code": 200,
+  "host": "host-x",
+  "data": {
+    "date": "2026-11-03",
+    "matieres": [
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "TECHN",
+        "nomProf": "nomProf-x",
+        "id": 1044,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1044,
+          "contenu": "PHA+Q29udGVudSA4PC9wPg==",
+          "rendreEnLigne": true,
+          "donneLe": "2026-11-03",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "PHA+Q29udGVudSA5PC9wPg==",
+            "documents": [
+              {
+                "id": 1045,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 2313329,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              },
+              {
+                "id": 1046,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 274472,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              }
+            ]
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1044,
+          "contenu": "PHA+Q29udGVudSAxMDwvcD4=",
+          "documents": [
+            {
+              "id": 1045,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 2313329,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1046,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 274472,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            }
+          ],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "SVT",
+        "nomProf": "nomProf-x",
+        "id": 1047,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "contenuDeSeance": {
+          "idDevoir": 1047,
+          "contenu": "PHA+Q29udGVudSAxMTwvcD4=",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "PH-CH",
+        "nomProf": "nomProf-x",
+        "id": 1048,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1048,
+          "contenu": "PHA+Q29udGVudSAxMjwvcD4=",
+          "rendreEnLigne": false,
+          "donneLe": "2026-10-14",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "",
+            "documents": []
+          },
+          "qcm": {
+            "idQCM": 1049,
+            "idAssociation": 1050,
+            "titre": "titre-x",
+            "debute": "2026-10-16 14:38:54",
+            "fini": "2026-10-16 14:46:05"
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1048,
+          "contenu": "PHA+Q29udGVudSAxMzwvcD4=",
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      },
+      {
+        "entityCode": "entityCode-x",
+        "entityLibelle": "entityLibelle-x",
+        "entityType": "entityType-x",
+        "matiere": "matiere-x",
+        "codeMatiere": "MATHS",
+        "nomProf": "nomProf-x",
+        "id": 1051,
+        "interrogation": false,
+        "blogActif": false,
+        "nbJourMaxRenduDevoir": 0,
+        "aFaire": {
+          "idDevoir": 1051,
+          "contenu": "PHA+Q29udGVudSAxNDwvcD4=",
+          "rendreEnLigne": false,
+          "donneLe": "2026-11-02",
+          "effectue": true,
+          "ressource": "",
+          "documentsRendusDeposes": false,
+          "ressourceDocuments": [],
+          "documents": [],
+          "elementsProg": [],
+          "liensManuel": [],
+          "documentsRendus": [],
+          "tags": [],
+          "cdtPersonnalises": [],
+          "contenuDeSeance": {
+            "contenu": "PHA+Q29udGVudSAxNTwvcD4=",
+            "documents": [
+              {
+                "id": 1036,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 220578,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              },
+              {
+                "id": 1037,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 32004,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              },
+              {
+                "id": 1038,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 13872,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              },
+              {
+                "id": 1039,
+                "libelle": "libelle-x",
+                "date": "date-x",
+                "taille": 122061,
+                "type": "FICHIER_CDT",
+                "signatureDemandee": false,
+                "etatSignatures": [],
+                "signature": {}
+              }
+            ]
+          }
+        },
+        "contenuDeSeance": {
+          "idDevoir": 1051,
+          "contenu": "PHA+Q29udGVudSAxNjwvcD4=",
+          "documents": [
+            {
+              "id": 1052,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 38008,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1053,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 292268,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1054,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 84592,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            },
+            {
+              "id": 1055,
+              "libelle": "libelle-x",
+              "date": "2026-11-02",
+              "taille": 57360,
+              "type": "FICHIER_CDT",
+              "signatureDemandee": false,
+              "etatSignatures": [],
+              "signature": {}
+            }
+          ],
+          "elementsProg": [],
+          "liensManuel": []
+        }
+      }
+    ]
+  }
+}
