@@ -174,11 +174,57 @@ def cmd_api_seed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_api_vapid_keys(args: argparse.Namespace) -> int:
+    """Print a new VAPID key pair, to put in the Vercel environment variables."""
+    from skoolathome.api.push import generate_vapid_keys
+
+    public, private = generate_vapid_keys()
+    print(f"SKOOLATHOME_VAPID_PUBLIC_KEY={public}")
+    print(f"SKOOLATHOME_VAPID_PRIVATE_KEY={private}")
+    return 0
+
+
 def cmd_api_serve(args: argparse.Namespace) -> int:
     """Run the API and the built PWA on this machine, for tests."""
     import uvicorn
 
     uvicorn.run("skoolathome.api.app:app", host=args.host, port=args.port)
+    return 0
+
+
+def cmd_signer_new_token(args: argparse.Namespace) -> int:
+    """Create the agent token, keep it here, and print what the vault needs: its hash."""
+    from skoolathome import secrets
+    from skoolathome.publish.nip46 import SECRET_NAME, new_token
+
+    if not args.uri.startswith("bunker://"):
+        sys.exit("L'adresse doit commencer par bunker:// (elle est affichée par bunkerd au démarrage).")
+    if secrets.read(SECRET_NAME) and not args.replace:
+        sys.exit("Un jeton existe déjà. Ajoute --replace pour en créer un nouveau (l'ancien ne servira plus).")
+    token, digest = new_token()
+    secrets.write(SECRET_NAME, {"uri": args.uri, "token": token})
+    agents = {"agents": [{"name": "skoolathome", "identity": args.identity, "token_sha256": digest}]}
+    print("Jeton enregistré dans ~/.config/skoolathome/bunker.json (mode 600).")
+    print("Variable BUNKER_AGENTS_JSON du service bunkerd sur Railway :")
+    print(json.dumps(agents))
+    return 0
+
+
+def cmd_signer_test(args: argparse.Namespace) -> int:
+    """Sign one event through the bunker. Kind 27235 must pass, kind 1 must be refused."""
+    from skoolathome.publish.nip46 import NIP98_KIND, SigningRefused, nip98_tags, sign
+
+    tags = nip98_tags(args.url, "GET") if args.kind == NIP98_KIND else []
+    try:
+        event = sign(args.kind, "" if args.kind == NIP98_KIND else "test skoolathome", tags)
+    except SigningRefused as error:
+        print(f"Refusé (type {args.kind}) : {error}")
+        return 1
+    except FileNotFoundError as error:
+        sys.exit(str(error))
+    print(f"Signé à distance (type {args.kind})")
+    print(f"  identifiant : {event.id().to_hex()}")
+    print(f"  auteur      : {event.author().to_bech32()}")
     return 0
 
 
@@ -223,10 +269,22 @@ def main() -> None:
     seed.add_argument("file")
     seed.add_argument("--visible-from", help="override the display date (YYYY-MM-DD)")
     seed.set_defaults(run=cmd_api_seed)
+    api.add_parser("vapid-keys", help="print a new key pair for Web Push").set_defaults(run=cmd_api_vapid_keys)
     serve = api.add_parser("serve", help="run the API locally")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.set_defaults(run=cmd_api_serve)
+
+    signer = commands.add_parser("signer", help="remote signer (bunker)").add_subparsers(dest="action", required=True)
+    token = signer.add_parser("new-token", help="create the agent token for the bunker")
+    token.add_argument("--uri", required=True, help="bunker://… as printed by bunkerd")
+    token.add_argument("--identity", required=True, help="npub of the identity, as printed by bunkerd")
+    token.add_argument("--replace", action="store_true")
+    token.set_defaults(run=cmd_signer_new_token)
+    test = signer.add_parser("test", help="sign one event through the bunker")
+    test.add_argument("--kind", type=int, default=27235)
+    test.add_argument("--url", default="https://example.invalid/api/test")
+    test.set_defaults(run=cmd_signer_test)
 
     args = parser.parse_args()
     sys.exit(args.run(args))

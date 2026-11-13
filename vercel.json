@@ -1,10 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["cdg1"],
+  "regions": [
+    "cdg1"
+  ],
   "buildCommand": "cd web && npm ci && npm run build",
   "functions": {
     "main.py": {
       "excludeFiles": "{tests/**,tmp/**,data/**,deploy/**,examples/**,web/node_modules/**,web/src/**,.venv/**}"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/daily",
+      "schedule": "0 15 * * *"
+    }
+  ]
 }

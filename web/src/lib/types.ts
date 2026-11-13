@@ -4,6 +4,14 @@ export type CheckMode = "exact" | "variants" | "number" | "fraction" | "choice" 
 export type ItemType = "choice" | "number" | "fraction" | "short_answer" | "fill_blank" | "matching" | "open";
 export type Answer = string | string[];
 export type Response = string | string[] | boolean;
+export type Rating = "good" | "partial" | "bad";
+export type ReportReason = "wrong_answer" | "not_covered" | "unclear" | "too_hard" | "too_easy";
+
+export interface ParentGuide {
+  explanation: string;
+  common_mistake: string;
+  oral_followup: string;
+}
 
 export interface Item {
   id: string;
@@ -17,7 +25,7 @@ export interface Item {
   why_wrong: Record<string, string>;
   hints: string[];
   solution: string;
-  parent_guide?: { explanation: string; common_mistake: string; oral_followup: string } | null;
+  parent_guide?: ParentGuide | null;
   concept: string;
   difficulty: number;
 }
@@ -28,6 +36,7 @@ export interface Sheet {
   title: string;
   type: string;
   sources: string[];
+  visible_from: string;
   estimated_minutes: number;
   items: Item[];
 }
@@ -43,6 +52,7 @@ export interface SheetSummary {
   items: number;
   answered: number;
   correct: number;
+  to_review: number;
 }
 
 export interface Device {

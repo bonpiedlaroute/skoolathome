@@ -62,3 +62,11 @@ textarea { min-height: 6rem; }
 .feedback.bad { background: var(--bad-bg); }
 .hint { background: var(--hint-bg); border-radius: 12px; padding: 0.7rem 1rem; margin: 0.5rem 0; }
 .error { color: var(--bad); }
+.guide p { margin: 0.4rem 0; }
+@media print {
+  :root { --bg: #fff; --card: #fff; --ink: #000; --muted: #444; --line: #999; }
+  body { background: #fff; }
+  #app { max-width: none; padding: 0; }
+  .no-print, button { display: none !important; }
+  .card { border: none; padding: 0; }
+}

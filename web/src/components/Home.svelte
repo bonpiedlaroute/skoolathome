@@ -1,14 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { api } from "../lib/api";
+  import { api, warmCache } from "../lib/api";
+  import { outbox } from "../lib/outbox.svelte";
   import type { Device, SheetSummary } from "../lib/types";
+  import Notifications from "./Notifications.svelte";
 
-  let { device, onopen, ondevices }: { device: Device; onopen: (id: string) => void; ondevices: () => void } =
-    $props();
+  let {
+    device,
+    onopen,
+    ondevices,
+  }: { device: Device; onopen: (id: string, how?: "review") => void; ondevices: () => void } = $props();
 
   let sheets = $state<SheetSummary[] | null>(null);
   let error = $state("");
+  let offline = $state(!navigator.onLine);
 
   const day = (iso: string) =>
     new Date(`${iso}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
@@ -19,12 +25,25 @@
     return `Terminée : ${sheet.correct}/${sheet.items}`;
   }
 
-  onMount(async () => {
-    try {
-      sheets = await api.sheets();
-    } catch {
-      error = "Impossible de charger les fiches.";
-    }
+  onMount(() => {
+    const update = () => (offline = !navigator.onLine);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    (async () => {
+      try {
+        sheets = await api.sheets();
+      } catch {
+        error = navigator.onLine
+          ? "Impossible de charger les fiches."
+          : "Pas de connexion, et les fiches n'ont pas encore été chargées sur cet appareil.";
+        return;
+      }
+      if (navigator.serviceWorker?.controller) void warmCache();
+    })();
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
   });
 </script>
 
@@ -32,6 +51,13 @@
   <h1>Tes fiches</h1>
   {#if device.role === "parent"}<button class="link" onclick={ondevices}>Appareils</button>{/if}
 </div>
+
+{#if offline || outbox.pending > 0}
+  <p class="hint" role="status">
+    {offline ? "Pas de connexion : tu peux quand même faire les fiches déjà chargées." : ""}
+    {outbox.pending > 0 ? ` ${outbox.pending} réponse${outbox.pending > 1 ? "s" : ""} en attente d'envoi.` : ""}
+  </p>
+{/if}
 
 {#if error}
   <p class="error">{error}</p>
@@ -47,9 +73,17 @@
       <div class="row spread">
         <span class={sheet.answered >= sheet.items ? "good" : "muted"}>{status(sheet)}</span>
         <button class="primary" onclick={() => onopen(sheet.id)}>
-          {sheet.answered === 0 ? "Commencer" : sheet.answered < sheet.items ? "Reprendre" : "Refaire"}
+          {sheet.answered === 0 ? "Commencer" : sheet.answered < sheet.items ? "Reprendre" : "Ouvrir"}
         </button>
       </div>
+      {#if sheet.to_review > 0}
+        <div class="row spread" style="margin-top:0.6rem">
+          <span>{sheet.to_review} point{sheet.to_review > 1 ? "s" : ""} à voir ensemble</span>
+          <button onclick={() => onopen(sheet.id, "review")}>Voir ensemble</button>
+        </div>
+      {/if}
     </div>
   {/each}
 {/if}
+
+<Notifications />

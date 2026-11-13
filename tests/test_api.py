@@ -134,11 +134,11 @@ def test_sheet_is_listed_only_from_its_display_date(parent, api_db):
     assert parent.get("/api/sheets/later").status_code == 404
 
 
-def test_child_does_not_receive_the_parent_guide(parent, api_db):
+def test_every_device_receives_the_parent_guide(parent, api_db):
+    """Together mode happens on the tablet: the page hides the guide behind a tap."""
     publish(api_db)
     child = pair_child(parent)
-    assert all("parent_guide" not in item for item in child.get("/api/sheets/s1").json()["items"])
-    assert any("parent_guide" in item for item in parent.get("/api/sheets/s1").json()["items"])
+    assert any(item.get("parent_guide") for item in child.get("/api/sheets/s1").json()["items"])
 
 
 def test_attempt_is_corrected_by_the_server_and_stored(parent, api_db):
@@ -153,8 +153,9 @@ def test_attempt_is_corrected_by_the_server_and_stored(parent, api_db):
     assert send("q6", ["0,5", "0,75", "0,25"]) is False
     assert send("q7", True) is True             # open question: the student's own verdict
     assert api_db.execute("SELECT count(*), count(*) FILTER (WHERE correct) FROM attempts").fetchone() == (6, 4)
-    progress = child.get("/api/sheets").json()[0]
-    assert (progress["answered"], progress["correct"]) == (6, 4)
+    listed = child.get("/api/sheets").json()[0]
+    # q2 and q6 were missed once: they can still be tried again, so they are not done yet
+    assert (listed["answered"], listed["correct"], listed["to_review"]) == (4, 4, 1)
     assert child.post("/api/attempts", json={"sheet_id": "s1", "item_id": "nope", "response": "x"}).status_code == 404
 
 
