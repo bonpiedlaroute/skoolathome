@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "Course-grounded revision sheets prepared by a local model"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.117",
     "httpx>=0.28",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.9",
+    "segno>=1.6",
 ]
 
 [project.scripts]
@@ -16,6 +18,7 @@ skoolathome-ed-probe = "skoolathome.collectors.ecoledirecte.probe:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "uvicorn>=0.30",
 ]
 
 [build-system]

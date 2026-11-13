@@ -1,0 +1,93 @@
+[
+  {
+    "name": "two quarters equals one half",
+    "mode": "fraction",
+    "answer": "1/2",
+    "response": "2/4",
+    "expected": true
+  },
+  {
+    "name": "same fraction",
+    "mode": "fraction",
+    "answer": "3/4",
+    "response": "3/4",
+    "expected": true
+  },
+  {
+    "name": "spaces around the bar",
+    "mode": "fraction",
+    "answer": "3/4",
+    "response": " 3 / 4 ",
+    "expected": true
+  },
+  {
+    "name": "different fraction",
+    "mode": "fraction",
+    "answer": "3/4",
+    "response": "4/3",
+    "expected": false
+  },
+  {
+    "name": "negative numerator",
+    "mode": "fraction",
+    "answer": "-1/2",
+    "response": "-2/4",
+    "expected": true
+  },
+  {
+    "name": "negative denominator",
+    "mode": "fraction",
+    "answer": "-1/2",
+    "response": "1/-2",
+    "expected": true
+  },
+  {
+    "name": "sign matters",
+    "mode": "fraction",
+    "answer": "-1/2",
+    "response": "1/2",
+    "expected": false
+  },
+  {
+    "name": "integer equals fraction",
+    "mode": "fraction",
+    "answer": "2",
+    "response": "4/2",
+    "expected": true
+  },
+  {
+    "name": "decimal equals fraction",
+    "mode": "fraction",
+    "answer": "1/2",
+    "response": "0,5",
+    "expected": true
+  },
+  {
+    "name": "zero denominator",
+    "mode": "fraction",
+    "answer": "1/2",
+    "response": "1/0",
+    "expected": false
+  },
+  {
+    "name": "no rounding",
+    "mode": "fraction",
+    "answer": "1/3",
+    "response": "0,33",
+    "expected": false
+  },
+  {
+    "name": "big numbers stay exact",
+    "mode": "fraction",
+    "answer": "1/3",
+    "response": "3333333333333333333/9999999999999999999",
+    "expected": true
+  },
+  {
+    "name": "not a fraction",
+    "mode": "fraction",
+    "answer": "1/2",
+    "response": "un demi",
+    "expected": false
+  }
+]

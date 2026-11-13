@@ -1,0 +1,117 @@
+"""Devices and sessions: no password to remember, each paired device has a role."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import secrets
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Iterator
+
+import psycopg
+from fastapi import Cookie, Depends, HTTPException, Response
+
+from skoolathome.api import settings
+
+COOKIE_NAME = "skoolathome_session"
+COOKIE_MAX_AGE = int(timedelta(days=400).total_seconds())  # the longest lifetime browsers accept
+PAIRING_TOKEN_LIFETIME = timedelta(minutes=10)
+MIN_BOOTSTRAP_CODE_LENGTH = 16
+
+
+@dataclass(frozen=True)
+class Device:
+    id: str
+    role: str
+    label: str
+
+
+def sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def get_conn() -> Iterator[psycopg.Connection]:
+    """One short connection per request: what a serverless function needs."""
+    with psycopg.connect(settings.database_url(), autocommit=True) as conn:
+        yield conn
+
+
+def set_session_cookie(response: Response, value: str) -> None:
+    response.set_cookie(
+        COOKIE_NAME, value, max_age=COOKIE_MAX_AGE, path="/",
+        httponly=True, secure=settings.cookie_secure(), samesite="lax",
+    )
+
+
+def create_device(conn: psycopg.Connection, role: str, label: str) -> tuple[Device, str]:
+    """Returns the device and its session value, to put in the cookie. Only the hash is stored."""
+    session = secrets.token_urlsafe(32)
+    device = Device(id=secrets.token_hex(8), role=role, label=label)
+    conn.execute(
+        "INSERT INTO devices (id, role, label, session_hash) VALUES (%s, %s, %s, %s)",
+        (device.id, device.role, device.label, sha256(session)),
+    )
+    return device, session
+
+
+def pair_with_bootstrap_code(conn: psycopg.Connection, code: str, label: str) -> tuple[Device, str]:
+    """The very first parent device. Works once: refused as soon as a parent device exists."""
+    expected = settings.bootstrap_code()
+    if len(expected) < MIN_BOOTSTRAP_CODE_LENGTH or not hmac.compare_digest(code.encode(), expected.encode()):
+        raise HTTPException(403, "invalid code")
+    with conn.transaction():
+        conn.execute("LOCK TABLE devices IN EXCLUSIVE MODE")
+        exists = conn.execute(
+            "SELECT 1 FROM devices WHERE role = 'parent' AND revoked_at IS NULL LIMIT 1"
+        ).fetchone()
+        if exists:
+            raise HTTPException(403, "a parent device is already paired: pair from its QR code")
+        return create_device(conn, "parent", label)
+
+
+def create_pairing_token(conn: psycopg.Connection, creator: Device, role: str, label: str) -> str:
+    token = secrets.token_urlsafe(24)
+    conn.execute(
+        "INSERT INTO pairing_tokens (token_hash, role, label, created_by, expires_at) "
+        "VALUES (%s, %s, %s, %s, now() + %s)",
+        (sha256(token), role, label, creator.id, PAIRING_TOKEN_LIFETIME),
+    )
+    return token
+
+
+def pair_with_token(conn: psycopg.Connection, token: str) -> tuple[Device, str]:
+    """A token works once, within ten minutes. The UPDATE is the single-use guarantee."""
+    with conn.transaction():
+        row = conn.execute(
+            "UPDATE pairing_tokens SET used_at = now() "
+            "WHERE token_hash = %s AND used_at IS NULL AND expires_at > now() "
+            "RETURNING role, label",
+            (sha256(token),),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(403, "invalid, expired or already used token")
+        return create_device(conn, row[0], row[1])
+
+
+def current_device(
+    conn: psycopg.Connection = Depends(get_conn),
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> Device:
+    """The device behind the session cookie. A revoked device loses access at its next request."""
+    if not session:
+        raise HTTPException(401, "not paired")
+    row = conn.execute(
+        "UPDATE devices SET last_seen_at = now() "
+        "WHERE session_hash = %s AND revoked_at IS NULL RETURNING id, role, label",
+        (sha256(session),),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(401, "not paired")
+    return Device(*row)
+
+
+def parent_device(device: Device = Depends(current_device)) -> Device:
+    if device.role != "parent":
+        raise HTTPException(403, "parent only")
+    return device

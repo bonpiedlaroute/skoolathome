@@ -1,4 +1,4 @@
-"""Command line: skoolathome db migrate | collect | summary | evening | ed …"""
+"""Command line: skoolathome db migrate | collect | summary | evening | ed … | api …"""
 
 from __future__ import annotations
 
@@ -138,6 +138,50 @@ def cmd_ed_anonymize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _api_connect():
+    import psycopg
+
+    from skoolathome.api import settings
+
+    return psycopg.connect(settings.database_url(), autocommit=True)
+
+
+def cmd_api_migrate(args: argparse.Namespace) -> int:
+    """Migrate the online database (Neon), named by DATABASE_URL."""
+    from skoolathome.api import MIGRATIONS_DIR
+    from skoolathome.store.migrate import migrate
+
+    with _api_connect() as conn:
+        applied = migrate(conn, MIGRATIONS_DIR)
+    print("Migrations appliquées : " + (", ".join(applied) if applied else "aucune, tout est à jour"))
+    return 0
+
+
+def cmd_api_seed(args: argparse.Namespace) -> int:
+    """Publish a hand-written sheet straight into the online database."""
+    from skoolathome.api.app import save_sheet
+    from skoolathome.schema.sheet import Sheet
+
+    try:
+        sheet = Sheet.model_validate_json(Path(args.file).read_text())
+    except ValidationError as error:
+        sys.exit(f"Fiche invalide :\n{error}")
+    if args.visible_from:
+        sheet = sheet.model_copy(update={"visible_from": date.fromisoformat(args.visible_from)})
+    with _api_connect() as conn:
+        save_sheet(conn, sheet)
+    print(f"Fiche {sheet.id} publiée, visible à partir du {sheet.visible_from}.")
+    return 0
+
+
+def cmd_api_serve(args: argparse.Namespace) -> int:
+    """Run the API and the built PWA on this machine, for tests."""
+    import uvicorn
+
+    uvicorn.run("skoolathome.api.app:app", host=args.host, port=args.port)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="skoolathome", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -172,6 +216,17 @@ def main() -> None:
     anonymize.add_argument("target")
     anonymize.add_argument("--student", type=int, required=True)
     anonymize.set_defaults(run=cmd_ed_anonymize)
+
+    api = commands.add_parser("api", help="online API tools").add_subparsers(dest="action", required=True)
+    api.add_parser("migrate", help="migrate the online database (DATABASE_URL)").set_defaults(run=cmd_api_migrate)
+    seed = api.add_parser("seed", help="publish a hand-written sheet")
+    seed.add_argument("file")
+    seed.add_argument("--visible-from", help="override the display date (YYYY-MM-DD)")
+    seed.set_defaults(run=cmd_api_seed)
+    serve = api.add_parser("serve", help="run the API locally")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.set_defaults(run=cmd_api_serve)
 
     args = parser.parse_args()
     sys.exit(args.run(args))

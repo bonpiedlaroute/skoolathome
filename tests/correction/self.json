@@ -1,0 +1,23 @@
+[
+  {
+    "name": "student says right",
+    "mode": "self_assessment",
+    "answer": "",
+    "response": true,
+    "expected": true
+  },
+  {
+    "name": "student says wrong",
+    "mode": "self_assessment",
+    "answer": "",
+    "response": false,
+    "expected": false
+  },
+  {
+    "name": "text is not a self assessment",
+    "mode": "self_assessment",
+    "answer": "",
+    "response": "oui",
+    "expected": false
+  }
+]

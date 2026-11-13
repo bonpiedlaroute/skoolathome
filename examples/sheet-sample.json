@@ -1,0 +1,105 @@
+{
+  "id": "sample-2026-11-13-maths",
+  "student": "eleve",
+  "subject": "Mathématiques",
+  "title": "Fractions : une fiche d'essai",
+  "type": "exercises",
+  "sources": ["lesson:2026-11-12:MATHS"],
+  "visible_from": "2026-11-13",
+  "estimated_minutes": 10,
+  "items": [
+    {
+      "id": "q1",
+      "type": "choice",
+      "prompt": "Quelle fraction est égale à $\\frac{1}{2}$ ?",
+      "answer": "3/6",
+      "choices": ["2/3", "3/6", "1/3", "5/8"],
+      "check": {"mode": "choice"},
+      "why_wrong": {
+        "2/3": "2/3 est plus grand que 1/2 : la moitié de 3, c'est 1,5, pas 2.",
+        "1/3": "1/3 est plus petit que 1/2 : un tiers, c'est moins qu'une moitié.",
+        "5/8": "La moitié de 8, c'est 4, pas 5."
+      },
+      "hints": ["Une fraction égale à 1/2 a un numérateur égal à la moitié du dénominateur."],
+      "solution": "3/6 = 1/2, car 3 est la moitié de 6.",
+      "parent_guide": {
+        "explanation": "Multiplier ou diviser le haut et le bas par le même nombre ne change pas la fraction.",
+        "common_mistake": "Comparer seulement les numérateurs.",
+        "oral_followup": "Peux-tu me donner une autre fraction égale à 1/2 ?"
+      },
+      "concept": "fractions égales",
+      "difficulty": 1
+    },
+    {
+      "id": "q2",
+      "type": "number",
+      "prompt": "Calcule : $-7 + 4$",
+      "answer": "-3",
+      "check": {"mode": "number"},
+      "hints": ["Sur une droite graduée, pars de −7 et avance de 4."],
+      "solution": "−7 + 4 = −3.",
+      "concept": "nombres relatifs",
+      "difficulty": 1
+    },
+    {
+      "id": "q3",
+      "type": "fraction",
+      "prompt": "Calcule et donne le résultat en fraction : $\\frac{3}{4} + \\frac{1}{6}$",
+      "answer": "11/12",
+      "expression": "3/4 + 1/6",
+      "check": {"mode": "fraction"},
+      "hints": ["Cherche un dénominateur commun à 4 et 6.", "12 est un multiple de 4 et de 6 : 3/4 = 9/12 et 1/6 = 2/12."],
+      "solution": "3/4 + 1/6 = 9/12 + 2/12 = 11/12.",
+      "concept": "addition de fractions",
+      "difficulty": 2
+    },
+    {
+      "id": "q4",
+      "type": "short_answer",
+      "prompt": "Comment s'appelle le nombre du bas dans une fraction ?",
+      "answer": "dénominateur",
+      "variants": ["le dénominateur"],
+      "check": {"mode": "variants"},
+      "hints": ["Il « dénomme » les parts : il dit en combien de parts on a coupé."],
+      "solution": "C'est le dénominateur.",
+      "concept": "vocabulaire des fractions",
+      "difficulty": 1
+    },
+    {
+      "id": "q5",
+      "type": "fill_blank",
+      "prompt": "Dans 5/8, le numérateur est ___ et le dénominateur est ___.",
+      "answer": ["5", "8"],
+      "check": {"mode": "exact"},
+      "solution": "Le numérateur est 5 (en haut), le dénominateur est 8 (en bas).",
+      "concept": "vocabulaire des fractions",
+      "difficulty": 1
+    },
+    {
+      "id": "q6",
+      "type": "matching",
+      "prompt": "Associe chaque fraction à son écriture décimale.",
+      "left": ["1/2", "1/4", "3/4"],
+      "choices": ["0,75", "0,5", "0,25"],
+      "answer": ["0,5", "0,25", "0,75"],
+      "check": {"mode": "exact"},
+      "solution": "1/2 = 0,5 ; 1/4 = 0,25 ; 3/4 = 0,75.",
+      "concept": "fractions et décimaux",
+      "difficulty": 2
+    },
+    {
+      "id": "q7",
+      "type": "open",
+      "prompt": "Explique avec tes mots pourquoi 2/4 et 1/2 représentent la même quantité.",
+      "check": {"mode": "self_assessment"},
+      "solution": "Si on coupe un gâteau en 4 et qu'on prend 2 parts, on a pris la moitié du gâteau, comme en le coupant en 2 et en prenant 1 part. On a multiplié le haut et le bas par 2.",
+      "parent_guide": {
+        "explanation": "On attend l'idée de partage : deux quarts font une moitié.",
+        "common_mistake": "Réciter la règle sans pouvoir l'illustrer.",
+        "oral_followup": "Dessine-moi les deux gâteaux."
+      },
+      "concept": "fractions égales",
+      "difficulty": 2
+    }
+  ]
+}

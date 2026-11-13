@@ -1,0 +1,162 @@
+[
+  {
+    "name": "accents and case ignored",
+    "mode": "exact",
+    "answer": "Éléphant",
+    "response": "elephant",
+    "expected": true
+  },
+  {
+    "name": "same word",
+    "mode": "exact",
+    "answer": "elephant",
+    "response": "Éléphant",
+    "expected": true
+  },
+  {
+    "name": "extra spaces ignored",
+    "mode": "exact",
+    "answer": "la  Révolution française",
+    "response": "  La révolution   Française ",
+    "expected": true
+  },
+  {
+    "name": "typographic apostrophe",
+    "mode": "exact",
+    "answer": "l'eau",
+    "response": "l’eau",
+    "expected": true
+  },
+  {
+    "name": "ligature oe",
+    "mode": "exact",
+    "answer": "cœur",
+    "response": "coeur",
+    "expected": true
+  },
+  {
+    "name": "different word",
+    "mode": "exact",
+    "answer": "elephant",
+    "response": "elefant",
+    "expected": false
+  },
+  {
+    "name": "empty answer is wrong",
+    "mode": "exact",
+    "answer": "elephant",
+    "response": "",
+    "expected": false
+  },
+  {
+    "name": "variant accepted",
+    "mode": "variants",
+    "answer": "Charlemagne",
+    "response": "Charles le Grand",
+    "expected": true,
+    "variants": [
+      "Charles le Grand",
+      "Carolus Magnus"
+    ]
+  },
+  {
+    "name": "variant list ignored in choice mode",
+    "mode": "choice",
+    "answer": "Paris",
+    "response": "Lutèce",
+    "expected": false,
+    "variants": [
+      "Lutèce"
+    ]
+  },
+  {
+    "name": "choice right",
+    "mode": "choice",
+    "answer": "Paris",
+    "response": "paris",
+    "expected": true
+  },
+  {
+    "name": "choice wrong",
+    "mode": "choice",
+    "answer": "Paris",
+    "response": "Lyon",
+    "expected": false
+  },
+  {
+    "name": "blanks all right",
+    "mode": "exact",
+    "answer": [
+      "est",
+      "ont"
+    ],
+    "response": [
+      "Est",
+      " ont "
+    ],
+    "expected": true
+  },
+  {
+    "name": "blanks one wrong",
+    "mode": "exact",
+    "answer": [
+      "est",
+      "ont"
+    ],
+    "response": [
+      "est",
+      "sont"
+    ],
+    "expected": false
+  },
+  {
+    "name": "blanks wrong count",
+    "mode": "exact",
+    "answer": [
+      "est",
+      "ont"
+    ],
+    "response": [
+      "est"
+    ],
+    "expected": false
+  },
+  {
+    "name": "blanks variant list",
+    "mode": "variants",
+    "answer": [
+      "est",
+      "ont"
+    ],
+    "response": [
+      "es",
+      "ont"
+    ],
+    "expected": true,
+    "variants": [
+      [
+        "es",
+        "ont"
+      ]
+    ]
+  },
+  {
+    "name": "list expected, text given",
+    "mode": "exact",
+    "answer": [
+      "est",
+      "ont"
+    ],
+    "response": "est ont",
+    "expected": false
+  },
+  {
+    "name": "text expected, list given",
+    "mode": "exact",
+    "answer": "est",
+    "response": [
+      "est"
+    ],
+    "expected": false
+  }
+]

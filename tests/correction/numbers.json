@@ -1,0 +1,131 @@
+[
+  {
+    "name": "integer",
+    "mode": "number",
+    "answer": "12",
+    "response": "12",
+    "expected": true
+  },
+  {
+    "name": "minus three is not three",
+    "mode": "number",
+    "answer": "3",
+    "response": "-3",
+    "expected": false
+  },
+  {
+    "name": "three is not minus three",
+    "mode": "number",
+    "answer": "-3",
+    "response": "3",
+    "expected": false
+  },
+  {
+    "name": "negative right",
+    "mode": "number",
+    "answer": "-3",
+    "response": "-3",
+    "expected": true
+  },
+  {
+    "name": "typographic minus",
+    "mode": "number",
+    "answer": "-3",
+    "response": "−3",
+    "expected": true
+  },
+  {
+    "name": "explicit plus",
+    "mode": "number",
+    "answer": "3",
+    "response": "+3",
+    "expected": true
+  },
+  {
+    "name": "comma decimal",
+    "mode": "number",
+    "answer": "0.75",
+    "response": "0,75",
+    "expected": true
+  },
+  {
+    "name": "trailing zero",
+    "mode": "number",
+    "answer": "2.5",
+    "response": "2,50",
+    "expected": true
+  },
+  {
+    "name": "thousands space",
+    "mode": "number",
+    "answer": "1250",
+    "response": "1 250",
+    "expected": true
+  },
+  {
+    "name": "fraction given for a number",
+    "mode": "number",
+    "answer": "0.5",
+    "response": "1/2",
+    "expected": true
+  },
+  {
+    "name": "within tolerance",
+    "mode": "number",
+    "answer": "3.14",
+    "response": "3,141",
+    "expected": true,
+    "tolerance": "0.01"
+  },
+  {
+    "name": "at tolerance limit",
+    "mode": "number",
+    "answer": "3.14",
+    "response": "3,15",
+    "expected": true,
+    "tolerance": "0.01"
+  },
+  {
+    "name": "outside tolerance",
+    "mode": "number",
+    "answer": "3.14",
+    "response": "3,16",
+    "expected": false,
+    "tolerance": "0.01"
+  },
+  {
+    "name": "no tolerance by default",
+    "mode": "number",
+    "answer": "3.14",
+    "response": "3,141",
+    "expected": false
+  },
+  {
+    "name": "not a number",
+    "mode": "number",
+    "answer": "12",
+    "response": "douze",
+    "expected": false
+  },
+  {
+    "name": "empty",
+    "mode": "number",
+    "answer": "12",
+    "response": "",
+    "expected": false
+  },
+  {
+    "name": "two decimal marks",
+    "mode": "number",
+    "answer": "1.5",
+    "response": "1,5,0",
+    "expected": false
+  },
+  {
+    "name": "unit is not a number",
+    "mode": "number",
+    "answer": "12",
+    "response": "12 cm",
+    "expected": false
+  }
+]
