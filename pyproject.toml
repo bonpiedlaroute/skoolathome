@@ -1,0 +1,26 @@
+[project]
+name = "skoolathome"
+version = "0.1.0"
+description = "Course-grounded revision sheets prepared by a local model"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+]
+
+[project.scripts]
+skoolathome-ed-probe = "skoolathome.collectors.ecoledirecte.probe:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skoolathome"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
