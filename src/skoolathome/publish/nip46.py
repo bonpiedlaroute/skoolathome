@@ -12,7 +12,7 @@ import hashlib
 import secrets as random
 from datetime import timedelta
 
-from nostr_sdk import Event, EventBuilder, Keys, Kind, NostrConnect, NostrConnectUri, Tag
+from nostr_sdk import Event, EventBuilder, Keys, Kind, NostrConnect, NostrConnectUri, PublicKey, Tag
 
 from skoolathome import secrets
 
@@ -50,25 +50,62 @@ def authorization_header(event: Event) -> str:
     return "Nostr " + base64.b64encode(event.as_json().encode("utf-8")).decode("ascii")
 
 
-async def sign_async(kind: int, content: str, tags: list[list[str]], conf: dict | None = None) -> Event:
-    """Ask the bunker to sign. The result is checked here: never trust the signer on its word."""
-    conf = conf or load_conf()
-    separator = "&" if "?" in conf["uri"] else "?"
-    uri = NostrConnectUri.parse(f"{conf['uri']}{separator}secret={conf['token']}")
-    # A new transport key each time: it only signs the NIP-46 envelopes.
-    connect = NostrConnect(uri, Keys.generate(), TIMEOUT, None)
-    try:
-        author = await connect.get_public_key_async()
+class BunkerSession:
+    """One NIP-46 session for a whole evening.
+
+    The bunker sees `connect` and `get_public_key` once, then one `sign_event` per call:
+    fetching the feedback and publishing the batch cost two signatures, not two sessions.
+    """
+
+    def __init__(self, conf: dict | None = None) -> None:
+        self._conf = conf or load_conf()
+        self._loop = asyncio.new_event_loop()
+        self._connect: NostrConnect | None = None
+        self._author: PublicKey | None = None
+        self.signatures = 0
+
+    def __enter__(self) -> BunkerSession:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if not self._loop.is_closed():
+            self._loop.close()
+
+    def _run(self, coroutine):
+        try:
+            return self._loop.run_until_complete(coroutine)
+        except Exception as error:  # the bindings raise one error type for every failure
+            raise SigningRefused(str(error)) from error
+
+    async def _open(self) -> NostrConnect:
+        separator = "&" if "?" in self._conf["uri"] else "?"
+        uri = NostrConnectUri.parse(f"{self._conf['uri']}{separator}secret={self._conf['token']}")
+        # A new transport key per session: it only signs the NIP-46 envelopes.
+        return NostrConnect(uri, Keys.generate(), TIMEOUT, None)
+
+    def public_key(self) -> PublicKey:
+        if self._author is None:
+            self._connect = self._run(self._open())
+            self._author = self._run(self._connect.get_public_key_async())
+        return self._author
+
+    def sign(self, kind: int, content: str, tags: list[list[str]]) -> Event:
+        """Ask the bunker to sign. The result is checked here: never trust the signer on its word."""
+        author = self.public_key()
         unsigned = EventBuilder(Kind(kind), content).tags([Tag.parse(t) for t in tags]).finalize_unsigned(author)
-        event = await connect.sign_event_async(unsigned)
-    except Exception as error:  # the bindings raise one error type for every failure
-        raise SigningRefused(str(error)) from error
-    if event is None:
-        raise SigningRefused("no event returned")
-    if event.author().to_hex() != author.to_hex() or not event.verify():
-        raise SigningRefused("the bunker returned an invalid event")
-    return event
+        event = self._run(self._connect.sign_event_async(unsigned))
+        if event is None:
+            raise SigningRefused("no event returned")
+        if event.author().to_hex() != author.to_hex() or not event.verify():
+            raise SigningRefused("the bunker returned an invalid event")
+        self.signatures += 1
+        return event
 
 
 def sign(kind: int, content: str, tags: list[list[str]], conf: dict | None = None) -> Event:
-    return asyncio.run(sign_async(kind, content, tags, conf))
+    """One signature in its own session: for `skoolathome signer test`."""
+    with BunkerSession(conf) as session:
+        return session.sign(kind, content, tags)

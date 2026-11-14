@@ -1,0 +1,205 @@
+"""T13: NIP-98 on the API. A signed batch is published; every forged or replayed request is refused."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import time
+from datetime import date, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
+
+from skoolathome.api import app as app_module
+from skoolathome.api.app import app
+from skoolathome.publish.client import ApiClient, ApiError
+from skoolathome.publish.nip46 import authorization_header, nip98_tags
+from skoolathome.schema.sheet import Sheet
+from test_api import SAMPLE, api_db, browser, pair_child, parent  # noqa: F401  (fixtures)
+
+BASE = "https://testserver"
+AGENT = Keys.generate()
+
+
+class LocalSigner:
+    """Stands in for the bunker: same interface, a key in memory."""
+
+    def __init__(self, keys: Keys = AGENT, created_at: int | None = None, kind: int = 27235) -> None:
+        self.keys, self.created_at, self.kind, self.signatures = keys, created_at, kind, 0
+
+    def sign(self, kind: int, content: str, tags: list[list[str]]) -> Event:
+        builder = EventBuilder(Kind(self.kind), content).tags([Tag.parse(t) for t in tags])
+        if self.created_at is not None:
+            builder = builder.custom_created_at(Timestamp.from_secs(self.created_at))
+        self.signatures += 1
+        return builder.finalize(self.keys)
+
+
+@pytest.fixture
+def agent(api_db, monkeypatch):
+    monkeypatch.setenv("SKOOLATHOME_AGENT_PUBKEY", AGENT.public_key().to_bech32())
+    monkeypatch.setattr(app_module, "FEEDBACK_SETTLE", timedelta(0))
+    return ApiClient(BASE, LocalSigner(), http=TestClient(app, base_url=BASE))
+
+
+def sheet(sheet_id: str = "b1", days: int = -1) -> Sheet:
+    return Sheet.model_validate(dict(SAMPLE, id=sheet_id, visible_from=(date.today() + timedelta(days=days)).isoformat()))
+
+
+def signed_post(body: bytes, *, url: str = f"{BASE}/api/batches", method: str = "POST", signer=None,
+                sent_body: bytes | None = None, header: str | None = None):
+    """A raw signed request, to tamper with one part at a time."""
+    event = (signer or LocalSigner()).sign(27235, "", nip98_tags(url, method, body))
+    client = TestClient(app, base_url=BASE)
+    return client.post("/api/batches", content=sent_body if sent_body is not None else body,
+                       headers={"Authorization": header or authorization_header(event),
+                                "Content-Type": "application/json"})
+
+
+def batch_body(*sheets: Sheet) -> bytes:
+    return json.dumps({"sheets": [s.model_dump(mode="json") for s in sheets]}).encode()
+
+
+# ------------------------------------------------------------------- accepted
+
+
+def test_a_signed_batch_appears_on_the_tablet(agent, parent):
+    assert agent.publish([sheet("b1"), sheet("b2", days=+1)]) == ["b1", "b2"]
+    listed = [s["id"] for s in parent.get("/api/sheets").json()]
+    assert "b1" in listed and "b2" not in listed  # b2 shows from tomorrow
+    assert agent.signer.signatures == 1
+
+
+def test_feedback_returns_what_came_back_once(agent, parent, api_db):
+    agent.publish([sheet("b1")])
+    child = pair_child(parent)
+    child.post("/api/attempts", json={"sheet_id": "b1", "item_id": "q1", "response": "3/6"})
+    child.post("/api/reports", json={"sheet_id": "b1", "item_id": "q2", "reason": "unclear", "comment": "?"})
+    child.post("/api/sheets/b1/finish", json={"client_id": "finish-0001"})
+
+    first = agent.feedback(0)
+    assert [(a["item_id"], a["role"], a["correct"]) for a in first["attempts"]] == [("q1", "child", True)]
+    assert [(r["item_id"], r["reason"]) for r in first["reports"]] == [("q2", "unclear")]
+    assert [f["sheet_id"] for f in first["finishes"]] == ["b1"]
+
+    again = agent.feedback(first["until"])
+    assert again["attempts"] == again["reports"] == again["finishes"] == []
+    parent.post("/api/attempts", json={"sheet_id": "b1", "item_id": "q2", "mode": "together", "rating": "good"})
+    latest = agent.feedback(first["until"])
+    assert [(a["item_id"], a["role"], a["rating"]) for a in latest["attempts"]] == [("q2", "parent", "good")]
+
+
+def test_rows_still_settling_wait_for_the_next_call(agent, parent, monkeypatch):
+    monkeypatch.setattr(app_module, "FEEDBACK_SETTLE", timedelta(minutes=1))
+    agent.publish([sheet("b1")])
+    parent.post("/api/attempts", json={"sheet_id": "b1", "item_id": "q1", "response": "3/6"})
+    assert agent.feedback(0)["attempts"] == []
+
+
+# ------------------------------------------------------------------- refused
+
+
+def test_a_replayed_request_is_refused(agent):
+    body = batch_body(sheet())
+    event = LocalSigner().sign(27235, "", nip98_tags(f"{BASE}/api/batches", "POST", body))
+    headers = {"Authorization": authorization_header(event), "Content-Type": "application/json"}
+    client = TestClient(app, base_url=BASE)
+    assert client.post("/api/batches", content=body, headers=headers).status_code == 201
+    second = client.post("/api/batches", content=body, headers=headers)
+    assert second.status_code == 401 and second.json()["detail"] == "nip98: replayed"
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("modified body", "wrong payload"),
+        ("other key", "unknown key"),
+        ("too old", "expired"),
+        ("from the future", "expired"),
+        ("other url", "wrong url"),
+        ("other method", "wrong method"),
+        ("other kind", "wrong kind"),
+        ("forged signature", "bad signature"),
+        ("no header", "missing"),
+        ("bearer token", "missing"),
+        ("not base64", "malformed"),
+    ],
+)
+def test_forged_requests_are_refused(agent, api_db, case, reason):
+    body = batch_body(sheet())
+    now = int(time.time())
+    if case == "modified body":
+        response = signed_post(body, sent_body=batch_body(sheet("other")))
+    elif case == "other key":
+        response = signed_post(body, signer=LocalSigner(Keys.generate()))
+    elif case == "too old":
+        response = signed_post(body, signer=LocalSigner(created_at=now - 120))
+    elif case == "from the future":
+        response = signed_post(body, signer=LocalSigner(created_at=now + 120))
+    elif case == "other url":
+        response = signed_post(body, url=f"{BASE}/api/feedback")
+    elif case == "other method":
+        response = signed_post(body, method="PUT")
+    elif case == "other kind":
+        response = signed_post(body, signer=LocalSigner(kind=1))
+    elif case == "forged signature":
+        event = json.loads(LocalSigner().sign(27235, "", nip98_tags(f"{BASE}/api/batches", "POST", body)).as_json())
+        event["tags"][0][1] = f"{BASE}/api/batches?x=1"  # the signature no longer matches
+        response = signed_post(body, header="Nostr " + base64.b64encode(json.dumps(event).encode()).decode())
+    elif case == "no header":
+        response = TestClient(app, base_url=BASE).post("/api/batches", content=body)
+    elif case == "bearer token":
+        response = signed_post(body, header="Bearer something")
+    else:
+        response = signed_post(body, header="Nostr ###")
+    assert response.status_code == 401
+    assert response.json()["detail"] == f"nip98: {reason}"
+    assert api_db.execute("SELECT count(*) FROM sheets").fetchone()[0] == 0
+
+
+def test_feedback_needs_a_signature_for_its_own_url(agent):
+    client = TestClient(app, base_url=BASE)
+    event = LocalSigner().sign(27235, "", nip98_tags(f"{BASE}/api/feedback?since=0", "GET"))
+    headers = {"Authorization": authorization_header(event)}
+    assert client.get("/api/feedback?since=0", headers=headers).status_code == 200
+    event = LocalSigner().sign(27235, "", nip98_tags(f"{BASE}/api/feedback?since=0", "GET"))
+    stolen = client.get("/api/feedback?since=5", headers={"Authorization": authorization_header(event)})
+    assert stolen.status_code == 401 and stolen.json()["detail"] == "nip98: wrong url"
+    assert client.get("/api/feedback").status_code == 401
+
+
+def test_the_url_seen_behind_the_proxy(agent):
+    """Vercel forwards the public scheme and host in headers."""
+    url = "https://skoolathome.example/api/batches"
+    body = batch_body(sheet())
+    event = LocalSigner().sign(27235, "", nip98_tags(url, "POST", body))
+    response = TestClient(app, base_url="http://internal").post(
+        "/api/batches", content=body,
+        headers={"Authorization": authorization_header(event), "Content-Type": "application/json",
+                 "x-forwarded-proto": "https", "x-forwarded-host": "skoolathome.example"},
+    )
+    assert response.status_code == 201
+
+
+def test_without_the_agent_key_nothing_is_accepted(api_db, monkeypatch):
+    monkeypatch.delenv("SKOOLATHOME_AGENT_PUBKEY", raising=False)
+    client = ApiClient(BASE, LocalSigner(), http=TestClient(app, base_url=BASE))
+    with pytest.raises(ApiError) as refused:
+        client.publish([sheet()])
+    assert refused.value.status == 503
+
+
+def test_an_invalid_sheet_is_refused_after_the_signature(agent, api_db):
+    data = json.loads(batch_body(sheet()))
+    data["sheets"][0]["items"] = []
+    body = json.dumps(data).encode()
+    response = signed_post(body)
+    assert response.status_code == 422
+    assert api_db.execute("SELECT count(*) FROM sheets").fetchone()[0] == 0
+
+
+def test_payload_hash_is_the_sha256_of_the_body():
+    body = batch_body(sheet())
+    assert nip98_tags("u", "POST", body)[2] == ["payload", hashlib.sha256(body).hexdigest()]

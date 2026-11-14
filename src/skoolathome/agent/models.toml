@@ -1,0 +1,27 @@
+# Engine and models, versioned with the code (ARCHITECTURE.md §10 and §14.6): going back to
+# a previous model is a `git revert`. The code only speaks the OpenAI-compatible API, so a
+# change of engine (llama.cpp, OpenVINO) is a change of base_url.
+# SKOOLATHOME_MODELS=/path/to/other.toml points to another file, for experiments.
+
+[engine]
+name = "ollama"
+base_url = "http://127.0.0.1:11434/v1"
+native_url = "http://127.0.0.1:11434"  # Ollama's own API: measurements only (skoolathome llm bench)
+timeout_seconds = 1500                   # max_tokens 4096 at 3.4 tokens/s (T14 bench) is 20 min, plus reading
+
+# Writes the sheets and the lesson summaries. Mistral: strong in French.
+[generator]
+model = "ministral-3:8b-instruct-2512-q4_K_M"
+family = "mistral"
+quantization = "Q4_K_M"
+temperature = 0.3
+max_tokens = 4096
+
+# Checks what the code cannot (T17). Another family than the generator, on purpose.
+[judge]
+model = "qwen3.5:4b-q4_K_M"
+family = "qwen"
+quantization = "Q4_K_M"
+temperature = 0.0
+max_tokens = 1024
+reasoning_effort = "none"  # Qwen 3.5 thinks by default: off, it would cost minutes for nothing

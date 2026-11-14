@@ -12,11 +12,11 @@ from datetime import timedelta
 
 import psycopg
 import segno
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from skoolathome.api import auth, push
+from skoolathome.api import auth, nip98, push
 from skoolathome.api.auth import Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
@@ -71,6 +71,10 @@ class ReportRequest(Body):
 
 class FinishRequest(Body):
     client_id: str = Field(min_length=8, max_length=64)
+
+
+class BatchRequest(Body):
+    sheets: list[Sheet] = Field(min_length=1, max_length=50)
 
 
 class PushKeys(Body):
@@ -382,8 +386,82 @@ def daily(
     return {"day": day, **details}
 
 
+# ------------------------------------------------------------------ laptop (NIP-98)
+
+# A row is handed out once its insert has surely committed: a slow transaction cannot slip
+# behind the cursor.
+FEEDBACK_SETTLE = timedelta(seconds=5)
+
+
+@app.post("/api/batches", status_code=201)
+def publish_batch(
+    batch: BatchRequest,
+    agent: nip98.Agent = Depends(nip98.require_agent),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """The evening's sheets, all or nothing. Each one shows from its own display date."""
+    with conn.transaction():
+        for sheet in batch.sheets:
+            save_sheet(conn, sheet)
+    return {"published": [sheet.id for sheet in batch.sheets]}
+
+
+@app.get("/api/feedback")
+def feedback(
+    since: int = Query(default=0, ge=0, description="cursor returned by the previous call (microseconds)"),
+    agent: nip98.Agent = Depends(nip98.require_agent),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """Answers, reports and finished sheets received since the cursor. Pass `until` back as `since`."""
+    until = conn.execute(
+        "SELECT (extract(epoch FROM now() - %s) * 1000000)::bigint", (FEEDBACK_SETTLE,)
+    ).fetchone()[0]
+    window = {"since": since, "until": max(until, since)}
+
+    def received(column: str) -> str:
+        return (f"{column} > timestamptz 'epoch' + %(since)s * interval '1 microsecond' "
+                f"AND {column} <= timestamptz 'epoch' + %(until)s * interval '1 microsecond'")
+
+    attempts = conn.execute(
+        "SELECT a.id, a.sheet_id, a.item_id, d.role, a.mode, a.response, a.correct, a.rating, a.hints_used, "
+        "a.answered_at, a.created_at FROM attempts a JOIN devices d ON d.id = a.device_id "
+        f"WHERE {received('a.created_at')} ORDER BY a.id",
+        window,
+    ).fetchall()
+    reports = conn.execute(
+        "SELECT r.id, r.sheet_id, r.item_id, d.role, r.reason, r.comment, r.created_at "
+        "FROM reports r JOIN devices d ON d.id = r.device_id "
+        f"WHERE {received('r.created_at')} ORDER BY r.id",
+        window,
+    ).fetchall()
+    finishes = conn.execute(
+        "SELECT f.client_id, f.sheet_id, d.role, f.score, f.total, f.to_review, f.finished_at "
+        "FROM sheet_finishes f JOIN devices d ON d.id = f.device_id "
+        f"WHERE {received('f.finished_at')} ORDER BY f.finished_at",
+        window,
+    ).fetchall()
+    return {
+        **window,
+        "attempts": [
+            {"id": r[0], "sheet_id": r[1], "item_id": r[2], "role": r[3], "mode": r[4], "response": r[5],
+             "correct": r[6], "rating": r[7], "hints_used": r[8], "answered_at": r[9], "created_at": r[10]}
+            for r in attempts
+        ],
+        "reports": [
+            {"id": r[0], "sheet_id": r[1], "item_id": r[2], "role": r[3], "reason": r[4], "comment": r[5],
+             "created_at": r[6]}
+            for r in reports
+        ],
+        "finishes": [
+            {"id": r[0], "sheet_id": r[1], "role": r[2], "score": r[3], "total": r[4], "to_review": r[5],
+             "finished_at": r[6]}
+            for r in finishes
+        ],
+    }
+
+
 def save_sheet(conn: psycopg.Connection, sheet: Sheet) -> None:
-    """Insert or replace a sheet. Used by the seeding command now, by POST /batches in T13."""
+    """Insert or replace a sheet. Used by POST /api/batches, and by the seeding command."""
     conn.execute(
         "INSERT INTO sheets (id, student, subject, title, type, visible_from, due_by, body) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "

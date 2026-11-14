@@ -18,6 +18,15 @@ skoolathome = "skoolathome.cli:main"
 skoolathome-ed-probe = "skoolathome.collectors.ecoledirecte.probe:main"
 
 [dependency-groups]
+agent = [
+    "langchain-core>=1.8,<2",
+    "langchain-openai>=1.8,<2",
+    "langfuse>=5.2,<6",
+    "langgraph>=1.2,<2",
+    "langgraph-checkpoint-postgres>=3.2,<4",
+    "rapidfuzz>=3.14",
+    "sympy>=1.14",
+]
 dev = [
     "pytest>=8",
     "uvicorn>=0.30",
@@ -32,3 +41,7 @@ packages = ["src/skoolathome"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# The agent group (model, graph, tracing) is for the laptop only. Vercel's API does not import it.
+default-groups = ["dev", "agent"]

@@ -19,6 +19,16 @@ def load(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.json").read_text())
 
 
+@pytest.fixture(autouse=True)
+def no_langfuse(monkeypatch):
+    """Tests never send traces, even on a laptop where Langfuse is configured."""
+    try:
+        from skoolathome.agent import tracing
+    except ImportError:  # the agent group is not installed
+        return
+    monkeypatch.setattr(tracing, "client", lambda: None)
+
+
 @pytest.fixture
 def conn():
     """A fresh migrated database, dropped at the end. Skipped when Postgres is not running."""

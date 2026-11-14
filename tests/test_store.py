@@ -69,7 +69,7 @@ def count(conn, table: str) -> int:
 def test_migrations_apply_once_and_vector_is_installed(conn):
     assert migrate(conn) == []  # the fixture already applied them
     versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY 1")]
-    assert versions == ["0001", "0002"]
+    assert versions == ["0001", "0002", "0003"]
     assert conn.execute("SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector").fetchone()[0] == 1.0
 
 
