@@ -15,7 +15,9 @@ from skoolathome.agent.llm import ModelError
 from skoolathome.collectors.manual.source import ManualSource
 from skoolathome.material import search
 from skoolathome.publish.client import ApiError
+from skoolathome.schema.request import NewRequest
 from skoolathome.store import db
+from skoolathome.store import requests as requests_store
 from test_guards import CHOICE, NUMBER, RECAP, item
 from test_material import FakeEmbedder, write_pdf
 
@@ -92,6 +94,7 @@ class FakeApi:
         self.publish_error = publish_error
         self.cursors: list[int] = []
         self.published: list[str] = []
+        self.answered: list[dict] = []
         self.reports: list[dict] = []
 
     @contextmanager
@@ -103,10 +106,11 @@ class FakeApi:
         self.cursors.append(since)
         return self.data
 
-    def publish(self, sheets) -> list[str]:
+    def publish(self, sheets, requests=None) -> list[str]:
         if self.publish_error:
             raise self.publish_error
         self.published += [s.id for s in sheets]
+        self.answered += [r.model_dump() for r in requests or []]
         return [s.id for s in sheets]
 
     def report(self, report: dict) -> dict:
@@ -462,3 +466,54 @@ def test_a_run_stopped_half_way_resumes_without_redoing_finished_work(conn, url)
     assert (resuming.calls("Français"), resuming.calls("Mathématiques")) == (0, 1)  # French is not redone
     assert resuming.summaries == 0
     assert statuses(evening) == [("2026-11-13-franc-exercises", "ready"), ("2026-11-13-maths-exercises", "ready")]
+
+
+# ----------------------------------------------------------- the parent's requests
+
+
+FRACTIONS = ("Fractions égales : on ne change pas la valeur d'une fraction quand on multiplie le numérateur "
+             "et le dénominateur par un même nombre non nul. Exemple : 3/4 = 6/8. Simplifier une fraction, "
+             "c'est diviser le numérateur et le dénominateur par un même nombre.")
+ON_FRACTIONS = DraftSheet.model_validate({"title": "Fractions égales", "items": [item(
+    prompt="Que fait-on au numérateur et au dénominateur pour obtenir une fraction égale ?",
+    answer="on multiplie le numérateur et le dénominateur par un même nombre non nul", variants=[],
+    quote="on multiplie le numérateur et le dénominateur par un même nombre non nul", concept="fractions égales")]})
+
+
+def test_a_request_keeps_the_closest_lessons_and_sees_the_whole_subject(conn, url, monkeypatch):
+    monkeypatch.setattr(graph, "MAX_SOURCE_CHARS", 300)  # room for one lesson only
+    add_lesson(conn, "m0", "MATHS", FRACTIONS, day=date(2026, 11, 9))
+    add_lesson(conn, "m1", "MATHS", MATHS)  # the most recent, but on prime numbers
+    request_id = requests_store.create(conn, NewRequest(subject="MATHS", kind="revision", focus="les fractions égales",
+                                                        items=4), student_id="3030")
+    models = FakeModels(maths=[ON_FRACTIONS])
+    evening = run(url, models, only_requests=True)
+    [result] = evening.results
+    assert result["task_id"] == f"2026-11-13-maths-{request_id}" and result["status"] == "ready"
+    prompt = models.prompts[0][1][-1]["content"]
+    cours = prompt.rsplit("<cours>", 1)[1]
+    assert "lesson:2026-11-09:MATHS" in cours and "lesson:2026-11-13:MATHS" not in cours  # the closest one
+    assert "fiche demandée par le parent : une révision demandée par le parent sur « les fractions égales »" in prompt
+    overview = prompt.split("seulement de <cours>) :")[1].rsplit("<cours>", 1)[0]
+    assert "lundi 9/11" in overview and "vendredi 13/11" in overview  # every lesson, as a summary
+    assert "Fiche : 3 questions" in prompt  # 4 asked, but 270 characters of lesson
+    assert requests_store.recent(conn)[0]["status"] == "done"
+    threads = {row[0] for row in conn.execute("SELECT DISTINCT thread_id FROM langgraph.checkpoints")}
+    assert threads == {"2026-11-13-requests"}  # the evening's own run is untouched
+    assert evening.report["title"] == "Révisions : fiches demandées OK"
+
+
+def test_a_request_made_on_the_pwa_is_answered_in_the_batch(conn, url):
+    add_lesson(conn, "m1", "MATHS", MATHS)
+    api = FakeApi(feedback={"since": 0, "until": 9, "attempts": [], "reports": [], "finishes": [], "requests": [
+        {"id": "pwa-0a1b2c", "subject": "MATHS", "kind": "extra", "focus": "", "items": None,
+         "created_at": "2026-11-13T18:00:00+00:00"},
+        {"id": "pwa-3d4e5f", "subject": "SVT", "kind": "revision", "focus": "les volcans", "items": None,
+         "created_at": "2026-11-13T18:01:00+00:00"}]})
+    evening = run(url, FakeModels(), api=api, publish=True, only_requests=True)
+    assert statuses(evening) == [("2026-11-13-maths-pwa-0a1b2c", "published"), ("2026-11-13-svt-pwa-3d4e5f", "abstained")]
+    answered = {a["id"]: a for a in api.answered}
+    assert answered["pwa-0a1b2c"]["status"] == "done" and answered["pwa-0a1b2c"]["sheet_id"] == "2026-11-13-maths-pwa-0a1b2c"
+    assert answered["pwa-3d4e5f"]["status"] == "abstained" and "Rien en SVT" in answered["pwa-3d4e5f"]["reason"]
+    assert conn.execute("SELECT count(*) FROM agent.requests WHERE reported_at IS NULL").fetchone()[0] == 0
+    assert api.reports == []  # a requests-only run does not replace the evening's report

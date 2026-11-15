@@ -11,7 +11,9 @@
     device,
     onopen,
     ondevices,
-  }: { device: Device; onopen: (id: string, how?: "review") => void; ondevices: () => void } = $props();
+    onrequests,
+  }: { device: Device; onopen: (id: string, how?: "review") => void; ondevices: () => void; onrequests: () => void } =
+    $props();
 
   let sheets = $state<SheetSummary[] | null>(null);
   let error = $state("");
@@ -50,7 +52,12 @@
 
 <div class="row spread">
   <h1>Tes fiches</h1>
-  {#if device.role === "parent"}<button class="link" onclick={ondevices}>Appareils</button>{/if}
+  {#if device.role === "parent"}
+    <div class="row">
+      <button class="link" onclick={onrequests}>Demander une fiche</button>
+      <button class="link" onclick={ondevices}>Appareils</button>
+    </div>
+  {/if}
 </div>
 
 {#if offline || outbox.pending > 0}

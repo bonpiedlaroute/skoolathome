@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from skoolathome.schema.rule import Origin, Rule
+from skoolathome.schema.rule import DAILY_RULE_ID, Origin, Rule
 
 DEFAULT_RULES = (
     Rule(
-        id="daily", trigger="after_each_lesson", scope="this_lesson", format="exercises", target_minutes=8,
+        id=DAILY_RULE_ID, trigger="after_each_lesson", scope="this_lesson", format="exercises", target_minutes=8,
         origin=Origin(text="Après chaque cours qui a du contenu exploitable, un exercice court sur la séance."),
     ),
     Rule(
         id="before_test", trigger="before_test", scope="since_last_test", format="test_revision",
-        offsets_days=[4, 2, 1], target_minutes=10,
+        offsets_days=[4, 2, 1], target_minutes=8, items=5,
         origin=Origin(text="Avant un contrôle, une révision étalée : quatre jours avant, rappel de cours et "
                            "exercices de base ; deux jours avant, exercices mélangés ; la veille, un petit "
                            "contrôle d'entraînement."),

@@ -11,7 +11,7 @@ import pytest
 
 from skoolathome.rules import plan
 from skoolathome.rules.defaults import DEFAULT_RULES
-from skoolathome.rules.plan import Existing, LessonRef, Missed, PlanInputs, Slot, TestRef
+from skoolathome.rules.plan import Existing, LessonRef, Missed, PlanInputs, RequestRef, Slot, TestRef
 from skoolathome.schema.rule import Origin, Rule
 
 
@@ -236,3 +236,32 @@ def test_forced_tasks_try_a_format_on_chosen_lessons():
     [task] = result.tasks
     assert task.id == "2026-11-12-maths-lesson-recap" and task.kind == "lesson_recap" and task.target_minutes == 6
     assert reasons(result) == {"unknown": "séance inconnue dans les 5 dernières semaines"}
+
+
+# ------------------------------------------------------------- the parent's requests
+
+
+def test_a_parent_request_comes_first_reads_the_whole_subject_and_skips_the_load():
+    full = {"x": Existing("x", "published", day(17), 20, "x")}  # tomorrow is already full
+    request = RequestRef(id="cli-abc123", subject_code="MATHS", kind="revision", focus="les fractions égales")
+    result = run(16, lessons=[lesson(9), lesson(12), lesson(16), lesson(16, "FRANC")], existing=full, requests=[request])
+    first = result.tasks[0]
+    assert first.id == "2026-11-16-maths-cli-abc123" and first.kind == "test_revision" and first.rule_id == "request"
+    assert first.visible_from == day(16) and first.items == 5  # the before_test rule's number
+    assert [l.day for l in first.lessons] == [day(9), day(12), day(16)]  # every lesson of the subject
+    assert first.request_focus == "les fractions égales" and "les fractions égales" in first.stage_text
+    assert "charge maximale" in reasons(result)["2026-11-16-maths-exercises"]  # the others still have a limit
+
+
+def test_only_the_requests_when_asked():
+    request = RequestRef(id="pwa-1", subject_code="FRANC", kind="extra", items=4)
+    inputs = PlanInputs(run_date=day(16), lessons=[lesson(16), lesson(16, "FRANC")], requests=[request])
+    result = plan.plan(inputs, list(DEFAULT_RULES), only_requests=True)
+    assert [(t.id, t.kind, t.items) for t in result.tasks] == [("2026-11-16-franc-pwa-1", "exercises", 4)]
+
+
+def test_the_rule_s_number_of_questions_goes_into_its_tasks():
+    result = run(23, tests=[MATHS_TEST], lessons=[lesson(23)])
+    assert {t.items for t in result.tasks if t.rule_id == "before_test"} == {5}
+    daily = [t for t in run(16, lessons=[lesson(16)]).tasks]
+    assert daily[0].items is None  # from the duration

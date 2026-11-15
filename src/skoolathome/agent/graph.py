@@ -34,6 +34,7 @@ from langgraph.types import Send
 from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from pydantic import ValidationError
+from rapidfuzz import fuzz
 
 from skoolathome.agent import config, draft, formats, guards, judge, lessons, prompts, report, tracing
 from skoolathome.agent.embeddings import EmbeddingError
@@ -45,6 +46,7 @@ from skoolathome.rules import plan as planning
 from skoolathome.rules import store as rules_store
 from skoolathome.schema.sheet import Sheet
 from skoolathome.store import feedback as feedback_store
+from skoolathome.store import requests as requests_store
 from skoolathome.subjects import EXCLUDED_SUBJECTS, fr_day, label
 
 MAX_GENERATIONS = 3      # the first one, then up to two regenerations (ARCHITECTURE.md §9.5)
@@ -65,6 +67,7 @@ class EveningState(TypedDict, total=False):
     student_id: str | None
     lesson_ids: list[str]  # `evening --lesson`: these lessons, outside the rules
     forced_format: str
+    only_requests: bool    # `evening --only-requests`: the parent's requests, nothing else
     publish: bool
     collect: dict
     documents: dict
@@ -86,6 +89,7 @@ class TaskState(TypedDict, total=False):
     trace_id: str
     sources: dict[str, str]  # source key -> text given to the model
     labels: dict[str, str]   # source key -> how the family reads it
+    overview: str            # a request: what the class did in the subject, from the summaries
     sheet: dict | None       # the last generated sheet, before the guards
     failures: list[str]      # why the last attempt failed: fed back to the model
     guard_log: Annotated[list[dict], operator.add]  # every guard and judge result of every attempt
@@ -118,6 +122,7 @@ class Outcome(TypedDict, total=False):
     trace_id: str
     sources: dict[str, str]
     labels: dict[str, str]
+    overview: str
     judge: dict | None
 
 
@@ -213,13 +218,14 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                 with services.api() as client:
                     data = client.feedback(since)
                 with connect() as conn:
-                    result = {**feedback_store.save(conn, data), "since": since, "until": data["until"]}
+                    result = {**feedback_store.save(conn, data, state.get("student_id")), "since": since,
+                              "until": data["until"]}
             except Exception as error:  # noqa: BLE001  (the feedback waits for tomorrow, the sheets do not)
                 result = {"error": str(error)[:300]}
             output(span, result, warning="error" in result)
         say(f"Retours de la tablette : non récupérés ({result['error'][:100]})" if "error" in result else
             f"Retours de la tablette : {result['attempts']} réponse(s), {result['reports']} signalement(s), "
-            f"{result['finishes']} fiche(s) terminée(s)")
+            f"{result['finishes']} fiche(s) terminée(s), {result['requests']} demande(s) de fiche")
         return {"feedback": result}
 
     def summarize_lessons(state: EveningState) -> dict:
@@ -252,7 +258,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         """Homework that may announce a test without the usual words: the model reads it, once
         per version of its text, as a last resort (ARCHITECTURE.md §8)."""
         student = state.get("student_id")
-        if not student:
+        if not student or state.get("only_requests"):
             return {}
         today = date.fromisoformat(state["run_date"])
         with connect() as conn:
@@ -309,7 +315,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             if state.get("lesson_ids"):
                 result = planning.forced(known, state["lesson_ids"], state.get("forced_format") or "exercises")
             else:
-                result = planning.plan(known, rules)
+                result = planning.plan(known, rules, only_requests=bool(state.get("only_requests")))
             week = today + timedelta(days=7)
             tests = [{"subject": t.subject, "subject_code": t.subject_code, "day": t.day.isoformat(), "reason": t.reason}
                      for t in planning.unique_tests(known.tests) if t.day <= week]
@@ -339,7 +345,9 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             with step("retrieve", state) as span:
                 say("Recherche des pages de documents pour chaque fiche…")
                 queries = [_query(conn, state["student_id"], task) for task in tasks]
-                wanted = [i for i, query in enumerate(queries) if len(query) >= MIN_QUERY_CHARS]
+                # The parent's words are searched as they are, even short: « les fractions ».
+                wanted = [i for i, query in enumerate(queries)
+                          if len(query) >= MIN_QUERY_CHARS or (tasks[i].get("request_focus") and query)]
                 try:
                     vectors = services.embedder.embed([queries[i] for i in wanted]) if wanted else []
                 except EmbeddingError as error:
@@ -375,10 +383,11 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         task = state["task"]
         with node("gather_sources", state) as span, connect() as conn:
             sources, labels = _sources(conn, state["student_id"], task)
+            overview = _overview(conn, state["student_id"], task) if task.get("request_id") else ""
             pages = {p["key"]: p["score"] for p in task.get("pages", [])}
             output(span, {key: {"chars": len(text), "label": labels.get(key, ""), **({"score": pages[key]} if key in pages else {})}
-                          for key, text in sources.items()})
-        return {"sources": sources, "labels": labels}
+                          for key, text in sources.items()} | ({"overview_chars": len(overview)} if overview else {}))
+        return {"sources": sources, "labels": labels, "overview": overview}
 
     def after_sources(state: TaskState) -> str:
         return "generate" if _chars(state.get("sources") or {}) >= MIN_SOURCE_CHARS else "abstain"
@@ -391,14 +400,14 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         if state.get("failures"):
             feedback = ("\nLa version précédente a été refusée par les vérifications. "
                         "Corrige ces points :\n" + "\n".join(f"- {r}" for r in state["failures"]))
-        items = shape.item_count(task["target_minutes"], _chars(state["sources"]))
+        items = shape.item_count(task["target_minutes"], _chars(state["sources"]), task.get("items"))
         messages = prompt.compile(
             subject=task["subject"],
             item_count=items,
             target_minutes=task["target_minutes"],
             sources="\n\n".join(f"[{key}]\n{text}" for key, text in state["sources"].items()),
             feedback=feedback,
-            context=_context(task, state["sources"]),
+            context=_context(task, state["sources"], state.get("overview", "")),
         )
         attempt = state.get("attempts", 0) + 1
         say(f"{task['id']} : écriture, essai {attempt}" + (f", {items} questions" if shape.scales else "") + "…")
@@ -529,6 +538,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             Send("task", {
                 "run_date": o["run_date"], "student_id": o["student_id"], "task": o["task"], "trace_id": o["trace_id"],
                 "attempts": o["attempts"], "failures": o["failures"], "sources": o["sources"], "labels": o["labels"],
+                "overview": o.get("overview", ""),
                 "sheet": None, "guard_log": o["guard_log"], "prompt_version": o["prompt_version"],
             })
             for o in rejected
@@ -551,19 +561,21 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                         "AND rule_id NOT IN ('', 'forced') AND (due_by IS NULL OR due_by >= %s) ORDER BY id",
                         (state.get("student_id"), state["run_date"]),
                     ).fetchall()
+                    answered = requests_store.to_report(conn)  # requests made online, and their outcome
                 sheets = [Sheet.model_validate(row[0]) for row in rows]
-                if not sheets:
+                if not sheets and not answered:
                     result = {"count": 0, "ids": []}
                 else:
                     try:
                         ids: list[str] = []
                         with services.api() as client:
-                            for start in range(0, len(sheets), BATCH_MAX):
-                                ids += client.publish(sheets[start:start + BATCH_MAX])
+                            for start in range(0, max(len(sheets), 1), BATCH_MAX):
+                                ids += client.publish(sheets[start:start + BATCH_MAX], answered if start == 0 else [])
                         with connect() as conn:
                             conn.execute("UPDATE agent.sheets SET status = 'published', published_at = now() "
                                          "WHERE id = ANY(%s)", (ids,))
-                        result = {"count": len(ids), "ids": ids}
+                            requests_store.reported(conn, [a.id for a in answered])
+                        result = {"count": len(ids), "ids": ids, "requests": len(answered)}
                     except Exception as error:  # noqa: BLE001  (sent tomorrow with the next batch)
                         result = {"error": str(error)[:300], "count": 0}
             output(span, result, warning="error" in result)
@@ -578,6 +590,11 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         with step("report", state) as span:
             built = report.build(date.fromisoformat(state["run_date"]),
                                  {**state, "memory": (state.get("memory") or []) + [report.memory_sample()]})
+            if state.get("only_requests"):
+                # The evening's own report stays the day's report; the API tells the parent
+                # about the requested sheets when it receives the batch.
+                output(span, built, warning=built["status"] == "ko")
+                return {"report": built}
             with connect() as conn:
                 report.save(conn, built)
             if state.get("publish") and services.api is not None:
@@ -647,8 +664,11 @@ def _chars(sources: dict[str, str]) -> int:
 
 
 def _query(conn: psycopg.Connection, student_id: str, task: dict) -> str:
-    """What the search looks for: the lessons' text; for an empty lesson, the homework given that
-    day (« apprendre la leçon p. 86 ») and what the teacher wrote about the test."""
+    """What the search looks for: what the parent asked for; else the lessons' text; for an empty
+    lesson, the homework given that day (« apprendre la leçon p. 86 ») and what the teacher wrote
+    about the test."""
+    if task.get("request_focus"):
+        return f"{task['subject']} : {task['request_focus']}"
     texts = []
     for ref in task["lessons"]:
         lesson = lessons.get(conn, student_id, ref["source"], ref["source_id"])
@@ -662,16 +682,26 @@ def _query(conn: psycopg.Connection, student_id: str, task: dict) -> str:
     return "\n".join(texts)[:4000]
 
 
+def relevance(focus: str, text: str) -> float:
+    """How close a lesson is to what the parent asked for (0 to 100), without a model."""
+    wanted, flat_text = guards.flat(focus), guards.flat(text)
+    return max(fuzz.partial_ratio(wanted, flat_text), fuzz.token_set_ratio(wanted, flat_text))
+
+
 def _sources(conn: psycopg.Connection, student_id: str, task: dict) -> tuple[dict[str, str], dict[str, str]]:
-    """The lessons first, most recent first within the budget, then the pages found. Each text
-    is given as it is: the quotes must be copied from what the teacher or the book wrote."""
+    """The lessons first within the budget, then the pages found. Most recent lessons first; for a
+    request, the ones closest to what the parent asked for. Each text is given as it is: the quotes
+    must be copied from what the teacher or the book wrote."""
     found = []
     for ref in task["lessons"]:
         lesson = lessons.get(conn, student_id, ref["source"], ref["source_id"])
         if lesson and lesson.content.strip():
             found.append(lesson)
+    focus = task.get("request_focus") or ""
+    order = (sorted(found, key=lambda l: (relevance(focus, l.content), l.day), reverse=True) if focus
+             else sorted(found, key=lambda l: l.day, reverse=True))
     budget, kept = MAX_SOURCE_CHARS, {}
-    for lesson in sorted(found, key=lambda l: l.day, reverse=True):
+    for lesson in order:
         if budget < 200:
             break
         kept[lesson.key] = lesson.content[:budget]
@@ -688,11 +718,36 @@ def _sources(conn: psycopg.Connection, student_id: str, task: dict) -> tuple[dic
     return sources, labels
 
 
-def _context(task: dict, sources: dict[str, str]) -> str:
+OVERVIEW_CHARS = 3000
+OVERVIEW_LINE_CHARS = 280
+
+
+def _overview(conn: psycopg.Connection, student_id: str, task: dict) -> str:
+    """For a request: every lesson of the subject the agent knows, as one line each, from its
+    summary. The model sees the whole course before writing; it quotes only from the sources."""
+    lines = []
+    for ref in task["lessons"]:
+        lesson = lessons.get(conn, student_id, ref["source"], ref["source_id"])
+        if lesson and lesson.content.strip():
+            text = " ".join((lessons.summary(conn, lesson) or lesson.content).split())
+            lines.append(f"- {fr_day(lesson.day)} : {text[:OVERVIEW_LINE_CHARS]}")
+    while lines and len("\n".join(lines)) > OVERVIEW_CHARS:
+        lines.pop(0)  # the oldest go first
+    return "\n".join(lines)
+
+
+def _context(task: dict, sources: dict[str, str], overview: str = "") -> str:
     """What the code tells the model about this task, beyond the format's own prompt."""
     lines = []
     test = task.get("test")
-    if task["kind"] == "test_revision" and test:
+    if task.get("request_id"):
+        lines.append(f"C'est une fiche demandée par le parent : {task['stage_text']}. Concentre-toi sur ce qu'il "
+                     "demande, en t'appuyant sur les séances données dans <cours>.")
+        if overview:
+            lines.append(f"Pour situer la demande, tout ce que la classe a vu en {task['subject']} ces dernières "
+                         "semaines (des résumés : ne les cite pas, les citations viennent seulement de <cours>) :\n"
+                         + overview)
+    elif task["kind"] == "test_revision" and test:
         lines.append(f"C'est une révision pour le contrôle de {task['subject']} du "
                      f"{fr_day(date.fromisoformat(test['day']))} : {task['stage_text']}.")
         if test.get("text"):
@@ -720,7 +775,8 @@ def _outcome(state: TaskState, status: str, reason: str = "") -> Outcome:
         "status": status, "reason": reason, "sheet": state.get("sheet"), "attempts": state.get("attempts", 0),
         "failures": state.get("failures") or [], "guard_log": state.get("guard_log") or [],
         "prompt_version": state.get("prompt_version", ""), "trace_id": state["trace_id"],
-        "sources": state.get("sources") or {}, "labels": state.get("labels") or {}, "judge": None,
+        "sources": state.get("sources") or {}, "labels": state.get("labels") or {},
+        "overview": state.get("overview", ""), "judge": None,
     }
 
 
@@ -753,6 +809,9 @@ def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:
          task["rule_version"], task["visible_from"], task.get("due_by"),
          sheet["estimated_minutes"] if sheet else 0, task.get("inputs", "")),
     )
+    if task.get("request_id"):
+        requests_store.answer(conn, task["request_id"], "done" if ready else "abstained",
+                              sheet_id=task["id"] if ready else None, reason=outcome.get("reason", ""))
 
 
 # ------------------------------------------------------------------------------ running
@@ -784,13 +843,15 @@ def run(
     publish: bool = False,
     lesson_ids: list[str] | None = None,
     forced_format: str | None = None,
+    only_requests: bool = False,
     restart: bool = False,
 ) -> Evening:
-    """Run the evening, or resume it if a run of the same date stopped half-way."""
+    """Run the evening, or resume it if a run of the same date stopped half-way. A run of the
+    parent's requests only has its own thread: it never resumes nor erases the evening's."""
     def connect() -> psycopg.Connection:
         return psycopg.connect(database_url, autocommit=True)
 
-    thread = run_date.isoformat()
+    thread = run_date.isoformat() + ("-requests" if only_requests else "")
     config_ = {"configurable": {"thread_id": thread}, "max_concurrency": 1, "recursion_limit": 200}
     with checkpointer(database_url) as saver:
         graph = build(services, connect).compile(checkpointer=saver)
@@ -802,8 +863,8 @@ def run(
         else:
             saver.delete_thread(thread)  # a finished run of the same day: start again from scratch
             final = graph.invoke({
-                "run_date": thread, "student_id": student_id, "lesson_ids": lesson_ids or [],
-                "forced_format": forced_format or "", "publish": publish,
+                "run_date": run_date.isoformat(), "student_id": student_id, "lesson_ids": lesson_ids or [],
+                "forced_format": forced_format or "", "only_requests": only_requests, "publish": publish,
             }, config_)
     tracing.flush()
     published = set((final.get("published") or {}).get("ids", []))

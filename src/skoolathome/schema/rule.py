@@ -24,8 +24,10 @@ Scope = Literal["this_lesson", "previous_lesson", "last_n_lessons", "since_last_
 SheetFormat = Literal["exercises", "lesson_recap", "quick_quiz", "test_revision"]
 RuleStatus = Literal["proposed", "active", "archived"]
 
-# Revision before a test comes first, then the parent's rules, then the daily exercise (§7.3).
-PRIORITY_REVISION, PRIORITY_PARENT, PRIORITY_DEFAULT = 0, 1, 2
+# A sheet the parent asked for comes first, then revision before a test, then the parent's rules,
+# then the daily exercise (§7.3).
+PRIORITY_REQUEST, PRIORITY_REVISION, PRIORITY_PARENT, PRIORITY_DEFAULT = -1, 0, 1, 2
+DAILY_RULE_ID = "daily"  # the default daily exercise: last in priority, even once the parent changed it
 
 
 class Origin(BaseModel):
@@ -51,6 +53,9 @@ class Rule(BaseModel):
     style: str = ""             # e.g. oral_quiz: told to the model
     suggested_mode: Literal["together", "solo"] = "solo"
     target_minutes: int = Field(default=8, ge=1, le=60)
+    # Questions per sheet; None: from target_minutes. Fewer when the lesson is short (at least 3),
+    # never more. A quick quiz always has 5, a « cours en clair » 2.
+    items: int | None = Field(default=None, ge=1, le=15)
     replaces_default: bool = False  # this subject gets no daily exercise
     offsets_days: list[int] = []    # before_test: days before the test, e.g. [4, 2, 1]
     n_lessons: int = Field(default=3, ge=1, le=10)  # scope last_n_lessons
@@ -73,4 +78,4 @@ class Rule(BaseModel):
     def priority(self) -> int:
         if self.trigger in ("before_test", "after_feedback"):
             return PRIORITY_REVISION
-        return PRIORITY_DEFAULT if self.origin.author == "default" else PRIORITY_PARENT
+        return PRIORITY_DEFAULT if self.id == DAILY_RULE_ID else PRIORITY_PARENT

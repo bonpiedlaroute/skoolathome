@@ -100,6 +100,17 @@ def test_pairing_token_works_once(parent):
     assert browser().post("/api/pair", json={"token": token}).status_code == 403
 
 
+def test_the_pairing_code_can_be_typed_by_hand(parent):
+    created = parent.post("/api/pairing-tokens", json={"role": "parent", "label": "Chrome du portable"}).json()
+    code = created["code"]
+    assert len(code) == 9 and code[4] == "-" and created["url"].endswith(f"#/pair/{code}")
+    assert not set(code.replace("-", "")) & set("01OI")
+    typed = f" {code[:4].lower()} {code[5:].lower()} "  # as someone types it
+    laptop = browser()
+    assert laptop.post("/api/pair", json={"token": typed}).json()["role"] == "parent"
+    assert laptop.get("/api/me").json()["label"] == "Chrome du portable"
+
+
 def test_expired_pairing_token_is_refused(parent, api_db):
     created = parent.post("/api/pairing-tokens", json={"role": "child", "label": "iPad"}).json()
     api_db.execute("UPDATE pairing_tokens SET expires_at = now() - interval '1 second'")

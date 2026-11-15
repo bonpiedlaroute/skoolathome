@@ -12,6 +12,7 @@ from skoolathome.rules.plan import (
     LessonRef,
     Missed,
     PlanInputs,
+    RequestRef,
     Slot,
     TestRef,
 )
@@ -53,7 +54,16 @@ def load(conn: psycopg.Connection, student_id: str, run_date: date) -> PlanInput
         tests=upcoming_tests(conn, student_id, run_date, horizon),
         past_tests=_past_tests(conn, student_id, start, run_date),
         existing=_existing(conn, student_id), missed=missed(conn, student_id, run_date),
+        requests=pending_requests(conn, student_id),
     )
+
+
+def pending_requests(conn: psycopg.Connection, student_id: str) -> list[RequestRef]:
+    rows = conn.execute(
+        "SELECT id, subject_code, kind, focus, items FROM agent.requests WHERE status = 'pending' "
+        "AND (student_id IS NULL OR student_id = %s) ORDER BY created_at", (student_id,),
+    ).fetchall()
+    return [RequestRef(id=r[0], subject_code=r[1], kind=r[2], focus=r[3], items=r[4]) for r in rows]
 
 
 def upcoming_tests(conn: psycopg.Connection, student_id: str, run_date: date, until: date) -> list[TestRef]:

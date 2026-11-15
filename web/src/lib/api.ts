@@ -3,7 +3,7 @@
 
 import { enqueue } from "./outbox.svelte";
 import type { Counters } from "./progress";
-import type { Device, Rating, ReportReason, Response as Answer, Sheet, SheetSummary } from "./types";
+import type { Device, Rating, ReportReason, RequestKind, Response as Answer, Sheet, SheetRequest, SheetSummary } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -45,10 +45,13 @@ export const api = {
   devices: () => call<Device[]>("GET", "/devices"),
   revoke: (id: string) => call<void>("DELETE", `/devices/${encodeURIComponent(id)}`),
   pairingToken: (role: "parent" | "child", label: string) =>
-    call<{ url: string; qr_svg: string; expires_in_minutes: number }>("POST", "/pairing-tokens", { role, label }),
+    call<{ code: string; url: string; qr_svg: string; expires_in_minutes: number }>("POST", "/pairing-tokens", { role, label }),
   pushKey: () => call<{ public_key: string }>("GET", "/push/key"),
   pushSubscribe: (subscription: PushSubscriptionJSON) => call<{ ok: boolean }>("POST", "/push/subscription", subscription),
   pushTest: () => call<{ sent: number; failed: number }>("POST", "/push/test"),
+  requests: () => call<SheetRequest[]>("GET", "/requests"),
+  createRequest: (subject: string, kind: RequestKind, focus: string, items: number | null) =>
+    call<SheetRequest>("POST", "/requests", { subject, kind, focus, items }),
 
   // Queued: these return at once, the server gets them as soon as it can.
   attempt(sheetId: string, itemId: string, fields: { mode: "solo" | "together"; response?: Answer; rating?: Rating; hints_used?: number }) {

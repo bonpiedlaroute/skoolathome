@@ -110,24 +110,26 @@ def cmd_evening(args: argparse.Namespace) -> int:
         student = str(args.student) if args.student else summary.latest_student(conn)
     services = graph.Services(
         models=llm.Models(),
-        collector=None if args.no_collect else _collector(args),
+        collector=None if args.no_collect or args.only_requests else _collector(args),
         api=_api_sessions(),
         embedder=_embedder(),
         material=ManualSource(),
         progress=lambda message: print(f"{datetime.now():%H:%M}  {message}", flush=True),
     )
     what = f" (séances choisies : {', '.join(args.lesson)}, format {args.format})" if args.lesson else ""
+    what = " : les fiches demandées seulement" if args.only_requests else what
     print(f"Soirée du {today.isoformat()}{what}" + ("" if publish else ", sans publication")
           + ". Compter 7 à 10 minutes par fiche.", flush=True)
     try:
         evening = graph.run(today, student, services, db.database_url(), publish=publish,
-                            lesson_ids=args.lesson, forced_format=args.format, restart=args.restart)
+                            lesson_ids=args.lesson, forced_format=args.format,
+                            only_requests=args.only_requests, restart=args.restart)
     except Exception as error:
         _send_failure(today, f"traitement interrompu ({type(error).__name__} : {str(error)[:150]})", publish)
         raise
     print()
     _print_evening(evening)
-    if not args.no_collect:
+    if not args.no_collect and not args.only_requests:
         args.save, args.notify = True, False
         try:
             cmd_summary(args)  # the T06 summary, kept in data/summaries/
@@ -307,6 +309,9 @@ def cmd_rules_list(args: argparse.Namespace) -> int:
         rules = store.latest(conn)
     for rule in sorted(rules, key=lambda r: (r.priority, r.id)):
         what = f"{rule.trigger}" + (f" {rule.subject}" if rule.subject else "") + (f" → {rule.format}" if rule.trigger != "load_limit" else f" {rule.max_minutes} min")
+        if rule.trigger != "load_limit":
+            what += f", {rule.items} questions" if rule.items else ", questions selon la durée"
+            what += f", {rule.target_minutes} min"
         print(f"{rule.id:<20} v{rule.version:<3} {rule.status:<9} {what}")
         if rule.origin.text:
             print(f"{'':<20} « {rule.origin.text} » ({rule.origin.author})")
@@ -334,14 +339,81 @@ def cmd_rules_add(args: argparse.Namespace) -> int:
     from skoolathome.schema.rule import Origin, Rule
 
     data = yaml.safe_load(Path(args.file).read_text())
-    data.setdefault("origin", Origin(author="parent", on=date.today()).model_dump(mode="json"))
+    data.setdefault("origin", Origin().model_dump(mode="json"))
     try:
-        rule = Rule.model_validate(data)
+        rule = store.by_parent(Rule.model_validate(data))  # yours from now on: the code no longer updates it
     except ValidationError as error:
         sys.exit(f"Règle invalide :\n{error}")
     with _connect() as conn:
         saved = store.save(conn, rule)
     print(f"Règle {saved.id} enregistrée, version {saved.version}, statut {saved.status}.")
+    return 0
+
+
+def cmd_rules_set(args: argparse.Namespace) -> int:
+    """`skoolathome rules set before_test items=4 target_minutes=8`: a new version of the rule."""
+    import yaml
+
+    from skoolathome.rules import store
+
+    changes = {}
+    for pair in args.changes:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            sys.exit(f"Attendu champ=valeur, pas « {pair} »")
+        changes[key.strip()] = yaml.safe_load(value) if value.strip() else None
+    with _connect() as conn:
+        try:
+            saved = store.set_fields(conn, args.id, changes)
+        except (LookupError, ValueError) as error:  # ValidationError is a ValueError
+            sys.exit(f"Règle non modifiée : {error}")
+    print(f"Règle {saved.id} : version {saved.version}, "
+          + ", ".join(f"{key} = {getattr(saved, key)}" for key in changes) + ".")
+    return 0
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """A sheet asked for by the parent: a revision on a precise point, or an extra exercise. With
+    --now, made at once (no collection), then published unless --no-publish."""
+    from skoolathome import summary
+    from skoolathome.schema.request import NewRequest
+    from skoolathome.store import requests
+    from skoolathome.subjects import code_of, label
+
+    code = code_of(args.subject)
+    if code is None:
+        sys.exit(f"Matière inconnue : {args.subject}. Par exemple : maths, francais, histoire, anglais, svt, physique.")
+    focus = " ".join(args.focus).strip()
+    try:
+        wanted = NewRequest(subject=code, kind="revision" if args.revision else "extra", focus=focus, items=args.items)
+    except ValidationError as error:
+        sys.exit(f"Demande invalide :\n{error}")
+    with _connect() as conn:
+        request_id = requests.create(conn, wanted, student_id=summary.latest_student(conn))
+    kind = "révision" if args.revision else "exercice en plus"
+    print(f"Demande {request_id} : {kind} de {label(code)}" + (f" sur « {focus} »" if focus else "") + ".")
+    if not args.now:
+        print("Elle sera faite au prochain passage : la soirée, ou skoolathome evening --only-requests.")
+        return 0
+    args.only_requests, args.no_collect, args.lesson, args.format, args.restart = True, True, None, "exercises", False
+    args.student, args.today = None, None
+    return cmd_evening(args)
+
+
+def cmd_requests(args: argparse.Namespace) -> int:
+    from skoolathome.store import requests
+    from skoolathome.subjects import label
+
+    states = {"pending": "en attente", "done": "faite", "abstained": "impossible"}
+    with _connect() as conn:
+        rows = requests.recent(conn)
+    if not rows:
+        print("Aucune demande. Par exemple : skoolathome ask maths les fractions égales --revision --now")
+    for r in rows:
+        kind = "révision" if r["kind"] == "revision" else "exercice en plus"
+        print(f"{r['created_at']:%d/%m %H:%M}  {label(r['subject_code']):<20} {kind:<17} {states[r['status']]:<11}"
+              f" {r['focus'][:40]}" + (f"  → {r['sheet_id']}" if r["sheet_id"] else "")
+              + (f"\n{'':<16}{r['reason'][:150]}" if r["status"] == "abstained" else ""))
     return 0
 
 
@@ -809,6 +881,8 @@ def main() -> None:
                          choices=["exercises", "quick_quiz", "lesson_recap", "test_revision"],
                          help="with --lesson: the sheet format to make")
     evening.add_argument("--restart", action="store_true", help="start again even if an interrupted run exists")
+    evening.add_argument("--only-requests", action="store_true",
+                         help="only the sheets the parent asked for (skoolathome ask, or the PWA); no collection")
     evening.set_defaults(run=cmd_evening)
 
     sheets = commands.add_parser("sheets", help="sheets generated on this laptop").add_subparsers(dest="action", required=True)
@@ -902,6 +976,20 @@ def main() -> None:
         change = rules.add_parser(action, help=f"set a rule {status} (a new version)")
         change.add_argument("id")
         change.set_defaults(run=cmd_rules_status, status=status)
+    set_rule = rules.add_parser("set", help="change fields of a rule, e.g. before_test items=4 (a new version)")
+    set_rule.add_argument("id")
+    set_rule.add_argument("changes", nargs="+", metavar="champ=valeur")
+    set_rule.set_defaults(run=cmd_rules_set)
+
+    ask = commands.add_parser("ask", help="ask for a sheet: a revision on a precise point, or an extra exercise")
+    ask.add_argument("subject", help="maths, francais, histoire, anglais, svt, physique… or the École Directe code")
+    ask.add_argument("focus", nargs="*", help="what to work on, in your words (optional)")
+    ask.add_argument("--revision", action="store_true", help="a revision sheet (default: an extra exercise)")
+    ask.add_argument("--items", type=int, help="number of questions")
+    ask.add_argument("--now", action="store_true", help="make it now (about 10 minutes), then publish it")
+    ask.add_argument("--no-publish", action="store_true", help="with --now: keep it on this laptop")
+    ask.set_defaults(run=cmd_ask)
+    commands.add_parser("requests", help="the sheets asked for, and what became of them").set_defaults(run=cmd_requests)
 
     material = commands.add_parser("material", help="course documents (drop folder)").add_subparsers(dest="action", required=True)
     index_ = material.add_parser("index", help="index the drop folder now")

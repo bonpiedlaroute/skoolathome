@@ -23,11 +23,12 @@ class Format:
     items: Callable[[int], int]   # how many questions for a target duration
     scales: bool = True           # fewer questions when the sources are short
 
-    def item_count(self, target_minutes: int, source_chars: int) -> int:
-        wanted = self.items(target_minutes)
+    def item_count(self, target_minutes: int, source_chars: int, wanted: int | None = None) -> int:
+        """The rule's or the request's number when given, else from the duration; fewer when the
+        sources are short (at least 3), so the model does not pad with invented questions."""
         if not self.scales:
-            return wanted
-        return min(wanted, max(MIN_ITEMS, source_chars // CHARS_PER_ITEM))
+            return self.items(target_minutes)
+        return min(wanted or self.items(target_minutes), max(MIN_ITEMS, source_chars // CHARS_PER_ITEM))
 
 
 FORMATS = {

@@ -81,3 +81,18 @@ export interface Device {
   last_seen_at?: string | null;
   is_this_device?: boolean;
 }
+
+export type RequestKind = "revision" | "extra";
+
+/** A sheet asked for by the parent, made at the laptop's next run. */
+export interface SheetRequest {
+  id: string;
+  subject: string; // École Directe code
+  kind: RequestKind;
+  focus: string;
+  items: number | null;
+  created_at: string;
+  status: "pending" | "done" | "abstained";
+  sheet_id: string | null;
+  reason: string;
+}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import psycopg
 from psycopg.types.json import Jsonb
 
@@ -13,19 +15,31 @@ _LATEST = (
 )
 
 
+def _content(rule: Rule) -> dict:
+    return rule.model_dump(mode="json", exclude={"version", "status"})
+
+
 def ensure_defaults(conn: psycopg.Connection) -> list[str]:
-    """Insert the default rules that were never stored. A default rule the parent changed or
-    archived keeps its latest version: it is not put back."""
-    added = []
+    """Store the default rules, and follow the code's changes to them, as new versions. A default
+    rule the parent changed, archived or reactivated (origin: parent) is never touched again."""
+    current = {rule.id: rule for rule in latest(conn)}
+    changed = []
     for rule in DEFAULT_RULES:
-        inserted = conn.execute(
-            "INSERT INTO agent.rules (id, version, status, body) SELECT %s, %s, %s, %s "
-            "WHERE NOT EXISTS (SELECT 1 FROM agent.rules WHERE id = %s) RETURNING id",
-            (rule.id, rule.version, rule.status, Jsonb(rule.model_dump(mode="json")), rule.id),
-        ).fetchone()
-        if inserted:
-            added.append(rule.id)
-    return added
+        stored = current.get(rule.id)
+        if stored is None:
+            conn.execute("INSERT INTO agent.rules (id, version, status, body) VALUES (%s, %s, %s, %s)",
+                         (rule.id, rule.version, rule.status, Jsonb(rule.model_dump(mode="json"))))
+            changed.append(rule.id)
+        elif stored.origin.author == "default" and stored.status == "active" and _content(stored) != _content(rule):
+            save(conn, rule)
+            changed.append(rule.id)
+    return changed
+
+
+def by_parent(rule: Rule, **changes) -> Rule:
+    """A rule as the parent changed it: it keeps its sentence, and the code no longer updates it."""
+    origin = rule.origin.model_copy(update={"author": "parent", "on": date.today()})
+    return Rule.model_validate({**rule.model_dump(), **changes, "origin": origin.model_dump()})
 
 
 def latest(conn: psycopg.Connection) -> list[Rule]:
@@ -49,9 +63,21 @@ def save(conn: psycopg.Connection, rule: Rule) -> Rule:
     return stored
 
 
-def set_status(conn: psycopg.Connection, rule_id: str, status: str) -> Rule:
-    """Archive or reactivate a rule: a new version with the new status."""
+def get(conn: psycopg.Connection, rule_id: str) -> Rule:
     current = next((rule for rule in latest(conn) if rule.id == rule_id), None)
     if current is None:
         raise LookupError(f"règle inconnue : {rule_id}")
-    return save(conn, current.model_copy(update={"status": status}))
+    return current
+
+
+def set_status(conn: psycopg.Connection, rule_id: str, status: str) -> Rule:
+    """Archive or reactivate a rule (a parent's decision): a new version with the new status."""
+    return save(conn, by_parent(get(conn, rule_id), status=status))
+
+
+def set_fields(conn: psycopg.Connection, rule_id: str, changes: dict) -> Rule:
+    """`skoolathome rules set before_test items=4`: a new version, validated, marked as the parent's."""
+    bad = sorted((set(changes) - set(Rule.model_fields)) | (set(changes) & {"id", "version", "origin"}))
+    if bad:
+        raise ValueError(f"champ inconnu ou non modifiable : {', '.join(bad)}")
+    return save(conn, by_parent(get(conn, rule_id), **changes))

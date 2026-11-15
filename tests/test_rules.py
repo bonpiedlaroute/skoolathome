@@ -24,7 +24,9 @@ def test_a_rule_says_what_it_needs():
         Rule(id="Bad Id", trigger="after_each_lesson")
     assert Rule(id="hg", subject="HI-GE", trigger="before_each_lesson", origin=Origin(author="parent")).priority == PRIORITY_PARENT
     assert Rule(id="test-3", trigger="before_test", offsets_days=[3]).priority == PRIORITY_REVISION
-    assert Rule(id="daily-2", trigger="after_each_lesson").priority == PRIORITY_DEFAULT
+    assert Rule(id="daily", trigger="after_each_lesson").priority == PRIORITY_DEFAULT
+    assert Rule(id="daily", trigger="after_each_lesson", origin=Origin(author="parent")).priority == PRIORITY_DEFAULT
+    assert Rule(id="extra-maths", trigger="after_each_lesson", subject="MATHS").priority == PRIORITY_PARENT
 
 
 def test_default_rules_are_stored_once_and_every_change_is_a_new_version(conn):
@@ -40,6 +42,22 @@ def test_default_rules_are_stored_once_and_every_change_is_a_new_version(conn):
     assert conn.execute("SELECT count(*) FROM agent.rules WHERE id = 'daily'").fetchone()[0] == 3
     with pytest.raises(LookupError):
         store.set_status(conn, "unknown", "active")
+
+
+def test_untouched_default_rules_follow_the_code_and_the_parent_s_are_kept(conn):
+    old = Rule(id="before_test", trigger="before_test", offsets_days=[4, 2, 1], target_minutes=10, format="test_revision")
+    conn.execute("INSERT INTO agent.rules (id, version, status, body) VALUES ('before_test', 1, 'active', %s)",
+                 (Jsonb(old.model_dump(mode="json")),))
+    assert "before_test" in store.ensure_defaults(conn)  # five questions now, as in the code
+    revision = store.get(conn, "before_test")
+    assert (revision.version, revision.items) == (2, 5)
+    mine = store.set_fields(conn, "before_test", {"items": 4})
+    assert (mine.version, mine.items, mine.origin.author) == (3, 4, "parent") and mine.origin.text == revision.origin.text
+    assert store.ensure_defaults(conn) == [] and store.get(conn, "before_test").items == 4
+    with pytest.raises(ValueError, match="champ inconnu ou non modifiable : questions"):
+        store.set_fields(conn, "before_test", {"questions": 4})
+    with pytest.raises(ValidationError):
+        store.set_fields(conn, "before_test", {"items": 40})
 
 
 @pytest.mark.parametrize("text, ambiguous", [
@@ -122,8 +140,8 @@ def test_feedback_is_kept_once_with_the_trace_of_its_sheet(conn):
                                                                 "quote": {"source_id": "lesson:2026-11-12:MATHS"}}]})),
     )
     assert feedback.cursor(conn) == 0
-    assert feedback.save(conn, FEEDBACK) == {"attempts": 1, "reports": 1, "finishes": 1}
-    assert feedback.save(conn, FEEDBACK) == {"attempts": 0, "reports": 0, "finishes": 0}
+    assert feedback.save(conn, FEEDBACK) == {"attempts": 1, "reports": 1, "finishes": 1, "requests": 0}
+    assert feedback.save(conn, FEEDBACK) == {"attempts": 0, "reports": 0, "finishes": 0, "requests": 0}
     assert feedback.cursor(conn) == 1_000
     assert conn.execute("SELECT trace_id, item_id FROM feedback.attempts").fetchone() == ("trace-s1", "q1")
     # The missed question comes back as a concept to work on (T20).

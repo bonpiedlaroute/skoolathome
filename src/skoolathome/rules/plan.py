@@ -16,7 +16,8 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 
-from skoolathome.schema.rule import PRIORITY_REVISION, Rule
+from skoolathome.schema.request import FORMAT_OF
+from skoolathome.schema.rule import DAILY_RULE_ID, PRIORITY_REQUEST, PRIORITY_REVISION, Rule
 from skoolathome.subjects import COMPUTATIONAL_SUBJECTS, EXCLUDED_SUBJECTS, fr_day, label
 
 HORIZON_DAYS = 14          # the timetable and the tests looked at
@@ -27,7 +28,7 @@ MAX_REVISION_LESSONS = 4   # the most recent lessons since the last test
 REVISION_LOOKBACK_DAYS = 28
 FOCUS_LOOKBACK_DAYS = 14   # missed concepts brought back in a test revision
 MAX_FOCUS = 5
-DEFAULT_TARGETS = {"exercises": 8, "quick_quiz": 5, "lesson_recap": 6, "test_revision": 10}
+DEFAULT_TARGETS = {"exercises": 8, "quick_quiz": 5, "lesson_recap": 6, "test_revision": 8}
 _TEST_REASONS = ("flag", "keywords", "model")  # from the most reliable to the least
 
 ASK_FOR_NOTEBOOK = "demande-lui son cahier, ou dépose une photo dans data/manual/."
@@ -93,6 +94,17 @@ class Missed:
     received_on: date  # when the laptop received it
 
 
+@dataclass(frozen=True)
+class RequestRef:
+    """A sheet the parent asked for, not made yet."""
+
+    id: str
+    subject_code: str
+    kind: str  # revision | extra
+    focus: str = ""
+    items: int | None = None
+
+
 @dataclass
 class PlanInputs:
     run_date: date
@@ -103,6 +115,7 @@ class PlanInputs:
     existing: dict[str, Existing] = field(default_factory=dict)
     missed: list[Missed] = field(default_factory=list)
     holidays: set[date] = field(default_factory=set)
+    requests: list[RequestRef] = field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------- output
@@ -129,6 +142,9 @@ class Task:
     test: TestRef | None = None
     missing: str = ""      # the abstention message when nothing usable is found
     scope_days: list[date] = field(default_factory=list)  # lesson days in scope, even without text
+    items: int | None = None  # questions wanted (the rule's, or the request's); None: from the duration
+    request_id: str = ""      # a sheet the parent asked for
+    request_focus: str = ""   # what the parent wants worked on
     inputs: str = ""       # fingerprint of what the task is made from
 
     @property
@@ -148,6 +164,7 @@ class Task:
             "suggested_mode": self.suggested_mode, "computational": self.computational,
             "test": ({**asdict(self.test), "day": self.test.day.isoformat()} if self.test else None),
             "missing": self.missing, "scope_days": [d.isoformat() for d in self.scope_days],
+            "items": self.items, "request_id": self.request_id, "request_focus": self.request_focus,
             "inputs": self.inputs, "pages": [],
         }
 
@@ -168,11 +185,16 @@ class Plan:
 # ------------------------------------------------------------------------------ plan
 
 
-def plan(inputs: PlanInputs, rules: list[Rule]) -> Plan:
+def plan(inputs: PlanInputs, rules: list[Rule], *, only_requests: bool = False) -> Plan:
+    """The tasks of the evening. The parent's requests come first, outside the load limit; with
+    `only_requests`, nothing else (`evening --only-requests`, `ask --now`)."""
     out = Plan()
+    requested = _requests(inputs, rules, out)
+    if only_requests:
+        out.tasks = requested
+        return out
     limit = min((r.max_minutes for r in rules if r.trigger == "load_limit" and r.max_minutes), default=None)
-    replaced = {r.subject: r.id for r in rules
-                if r.replaces_default and r.subject and r.origin.author != "default"}
+    replaced = {r.subject: r.id for r in rules if r.replaces_default and r.subject and r.id != DAILY_RULE_ID}
     candidates: list[Task] = []
     for rule in sorted(rules, key=lambda r: (r.priority, r.id)):
         if rule.trigger == "after_each_lesson":
@@ -188,7 +210,7 @@ def plan(inputs: PlanInputs, rules: list[Rule]) -> Plan:
     candidates = _merge_missed_into_revisions(candidates, out)
     candidates = _unique(candidates)
     fresh = _not_done(candidates, inputs.existing, out)
-    out.tasks = _within_load(fresh, inputs.existing, limit, out)
+    out.tasks = requested + _within_load(fresh, inputs.existing, limit, out)
     return out
 
 
@@ -231,9 +253,9 @@ def _after_lesson(inputs: PlanInputs, rule: Rule, replaced: dict[str, str], out:
         if not rule.subject and code in EXCLUDED_SUBJECTS:
             continue
         lessons = [l for l in inputs.lessons if l.day == day and l.subject_code == code]
-        name = "exercises" if rule.id == "daily" else rule.id
+        name = "exercises" if rule.id == DAILY_RULE_ID else rule.id
         task_id = _task_id(day, code, name)
-        if rule.origin.author == "default" and code in replaced:
+        if rule.id == DAILY_RULE_ID and code in replaced:
             out.skip(task_id, f"remplacée par la règle {replaced[code]}")
             continue
         chars = sum(l.chars for l in lessons)
@@ -247,7 +269,7 @@ def _after_lesson(inputs: PlanInputs, rule: Rule, replaced: dict[str, str], out:
             subject_code=code, subject=label(code, lessons[0].subject),
             visible_from=today + timedelta(days=1), due_by=_next_lesson_day(inputs, code, after=today),
             target_minutes=rule.target_minutes, lessons=lessons, style=rule.style,
-            suggested_mode=rule.suggested_mode,
+            suggested_mode=rule.suggested_mode, items=rule.items,
             missing=f"Rien d'exploitable dans la séance du {fr_day(day)} : {ASK_FOR_NOTEBOOK}",
             scope_days=[day],
         ))
@@ -285,7 +307,7 @@ def _before_lesson(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
             id=task_id, kind=rule.format, rule_id=rule.id, rule_version=rule.version, priority=rule.priority,
             subject_code=code, subject=subject, visible_from=day - timedelta(days=1), due_by=day,
             target_minutes=rule.target_minutes, lessons=lessons, style=rule.style,
-            suggested_mode=rule.suggested_mode,
+            suggested_mode=rule.suggested_mode, items=rule.items,
             missing=f"Rien de saisi pour le cours du {fr_day(previous)} : {ASK_FOR_NOTEBOOK}",
             scope_days=scope_days,
         ))
@@ -319,7 +341,7 @@ def _before_test(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
                 id=task_id, kind=rule.format, rule_id=rule.id, rule_version=rule.version, priority=rule.priority,
                 subject_code=test.subject_code, subject=test.subject, visible_from=show, due_by=test.day,
                 target_minutes=rule.target_minutes, lessons=lessons, stage=stage, stage_text=text,
-                focus=focus, style=rule.style, suggested_mode=rule.suggested_mode, test=test,
+                focus=focus, style=rule.style, suggested_mode=rule.suggested_mode, test=test, items=rule.items,
                 missing=f"Rien de saisi en {test.subject} depuis le dernier contrôle : {ASK_FOR_NOTEBOOK}",
                 scope_days=sorted({l.day for l in lessons}),
             ))
@@ -344,10 +366,38 @@ def _missed(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
             subject_code=code, subject=group[0].subject, visible_from=today + timedelta(days=1),
             due_by=_next_lesson_day(inputs, code, after=today), target_minutes=rule.target_minutes,
             lessons=lessons, stage="missed", stage_text="reprendre les notions ratées dans les dernières fiches",
+            items=rule.items,
             focus=list(dict.fromkeys(m.concept for m in group if m.concept))[:MAX_FOCUS],
             missing="Notions ratées, mais leur séance n'a plus de texte exploitable.",
             scope_days=sorted({l.day for l in lessons}),
         ))
+    return tasks
+
+
+def _requests(inputs: PlanInputs, rules: list[Rule], out: Plan) -> list[Task]:
+    """The sheets the parent asked for: on every lesson of the subject known to the agent; the
+    sources keep the ones closest to what was asked (gather_sources)."""
+    today = inputs.run_date
+    questions = {"test_revision": next((r.items for r in rules if r.id == "before_test"), None),
+                 "exercises": next((r.items for r in rules if r.id == DAILY_RULE_ID), None)}
+    tasks = []
+    for request in inputs.requests:
+        code, kind = request.subject_code, FORMAT_OF[request.kind]
+        lessons = sorted((l for l in inputs.lessons if l.subject_code == code and l.chars), key=lambda l: l.day)
+        subject = label(code, lessons[0].subject if lessons else "")
+        what = f" sur « {request.focus} »" if request.focus else ""
+        task = Task(
+            id=f"{today.isoformat()}-{code.lower()}-{request.id}", kind=kind, rule_id="request", rule_version=0,
+            priority=PRIORITY_REQUEST, subject_code=code, subject=subject, visible_from=today, due_by=None,
+            target_minutes=DEFAULT_TARGETS[kind], lessons=lessons, stage="request",
+            stage_text=("une révision demandée par le parent" if request.kind == "revision"
+                        else "un exercice en plus, demandé par le parent") + what,
+            items=request.items or questions.get(kind), request_id=request.id, request_focus=request.focus,
+            missing=f"Rien en {subject} dans le cahier de texte des 5 dernières semaines : {ASK_FOR_NOTEBOOK}",
+            scope_days=sorted({l.day for l in lessons}),
+        )
+        task.inputs = fingerprint(task)
+        tasks.append(task)
     return tasks
 
 
@@ -423,6 +473,7 @@ def fingerprint(task: Task) -> str:
     data = {
         "kind": task.kind, "rule": [task.rule_id, task.rule_version], "stage": task.stage,
         "focus": sorted(task.focus), "target": task.target_minutes, "style": task.style,
+        "items": task.items, "request": [task.request_id, task.request_focus],
         "lessons": sorted([l.key, l.fingerprint] for l in task.lessons),
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]

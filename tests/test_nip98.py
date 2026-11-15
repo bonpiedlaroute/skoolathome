@@ -16,6 +16,7 @@ from skoolathome.api import app as app_module
 from skoolathome.api.app import app
 from skoolathome.publish.client import ApiClient, ApiError
 from skoolathome.publish.nip46 import authorization_header, nip98_tags
+from skoolathome.schema.request import RequestUpdate
 from skoolathome.schema.sheet import Sheet
 from test_api import SAMPLE, api_db, browser, pair_child, parent  # noqa: F401  (fixtures)
 
@@ -224,3 +225,34 @@ def test_an_unsigned_report_is_refused(api_db):
 def test_payload_hash_is_the_sha256_of_the_body():
     body = batch_body(sheet())
     assert nip98_tags("u", "POST", body)[2] == ["payload", hashlib.sha256(body).hexdigest()]
+
+
+# ------------------------------------------------------------- the parent's requests
+
+
+def test_a_request_goes_to_the_laptop_and_comes_back_answered(agent, parent, api_db, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append(payload) or {"sent": 1})
+    created = parent.post("/api/requests", json={"subject": "MATHS", "kind": "revision", "focus": "les fractions"})
+    assert created.status_code == 201 and created.json()["status"] == "pending"
+    request_id = created.json()["id"]
+    assert pair_child(parent).post("/api/requests", json={"subject": "MATHS"}).status_code == 403  # parents only
+
+    [picked] = agent.feedback(0)["requests"]
+    assert (picked["id"], picked["subject"], picked["kind"], picked["focus"]) == (request_id, "MATHS", "revision", "les fractions")
+
+    answer = RequestUpdate(id=request_id, status="done", sheet_id="b1")
+    assert agent.publish([sheet("b1")], [answer]) == ["b1"]
+    [listed] = parent.get("/api/requests").json()
+    assert (listed["status"], listed["sheet_id"]) == ("done", "b1")
+    assert pushed[-1]["title"] == "Révisions : fiche demandée prête" and pushed[-1]["url"] == "/#/sheet/b1"
+
+    other = parent.post("/api/requests", json={"subject": "SVT", "kind": "extra"}).json()["id"]
+    agent.publish([], [RequestUpdate(id=other, status="abstained", reason="Rien en SVT dans le cahier de texte.")])
+    assert "Rien en SVT" in parent.get("/api/requests").json()[0]["reason"]
+
+
+def test_an_empty_batch_is_refused(agent):
+    with pytest.raises(ApiError) as refused:
+        agent.publish([])
+    assert refused.value.status == 422

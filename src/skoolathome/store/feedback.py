@@ -15,10 +15,17 @@ def cursor(conn: psycopg.Connection) -> int:
     return row[0] if row else 0
 
 
-def save(conn: psycopg.Connection, data: dict) -> dict[str, int]:
-    """Store what GET /api/feedback returned, then move the cursor. Received twice, stored once."""
-    counts = {"attempts": 0, "reports": 0, "finishes": 0}
+def save(conn: psycopg.Connection, data: dict, student_id: str | None = None) -> dict[str, int]:
+    """Store what GET /api/feedback returned, then move the cursor. Received twice, stored once.
+    Sheets the parent asked for from the PWA become requests of this laptop."""
+    counts = {"attempts": 0, "reports": 0, "finishes": 0, "requests": 0}
     with conn.transaction():
+        for r in data.get("requests", []):
+            counts["requests"] += conn.execute(
+                "INSERT INTO agent.requests (id, student_id, subject_code, kind, focus, items, origin, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'pwa', %s) ON CONFLICT (id) DO NOTHING",
+                (r["id"], student_id, r["subject"], r["kind"], r.get("focus", ""), r.get("items"), r["created_at"]),
+            ).rowcount
         for a in data.get("attempts", []):
             counts["attempts"] += conn.execute(
                 "INSERT INTO feedback.attempts (id, sheet_id, item_id, role, mode, response, correct, rating, "

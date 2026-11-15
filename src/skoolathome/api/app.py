@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import hmac
 import os
+import secrets
 from datetime import timedelta
 
 import psycopg
@@ -20,6 +21,7 @@ from skoolathome.api import auth, nip98, push
 from skoolathome.api.auth import Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
+from skoolathome.schema.request import NewRequest, RequestUpdate
 from skoolathome.schema.sheet import Sheet
 
 SCHOOL_TIMEZONE = ZoneInfo("Europe/Paris")
@@ -74,7 +76,14 @@ class FinishRequest(Body):
 
 
 class BatchRequest(Body):
-    sheets: list[Sheet] = Field(min_length=1, max_length=50)
+    sheets: list[Sheet] = Field(default=[], max_length=50)
+    requests: list[RequestUpdate] = Field(default=[], max_length=50)  # what became of the parent's requests
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> BatchRequest:
+        if not self.sheets and not self.requests:
+            raise ValueError("a batch needs a sheet or a request update")
+        return self
 
 
 class EveningReport(Body):
@@ -143,7 +152,7 @@ def create_pairing_token(
     url = f"{origin}/#/pair/{token}"
     qr = segno.make(url, error="m").svg_inline(scale=6, border=2, dark="#111", light="#fff")
     minutes = int(auth.PAIRING_TOKEN_LIFETIME.total_seconds() // 60)
-    return {"url": url, "qr_svg": qr, "expires_in_minutes": minutes}
+    return {"code": token, "url": url, "qr_svg": qr, "expires_in_minutes": minutes}
 
 
 @app.get("/api/devices")
@@ -313,6 +322,36 @@ def finish_sheet(
     return {"score": score, "total": total, "to_review": review}
 
 
+# ------------------------------------------------------------------ requests
+
+
+def _request_json(row) -> dict:
+    return {"id": row[0], "subject": row[1], "kind": row[2], "focus": row[3], "items": row[4],
+            "created_at": row[5], "status": row[6], "sheet_id": row[7], "reason": row[8]}
+
+
+_REQUEST_COLUMNS = "id, subject, kind, focus, items, created_at, status, sheet_id, reason"
+
+
+@app.post("/api/requests", status_code=201)
+def create_request(
+    body: NewRequest, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)
+) -> dict:
+    """A sheet asked for by the parent: made at the laptop's next run."""
+    row = conn.execute(
+        "INSERT INTO sheet_requests (id, subject, kind, focus, items, created_by) VALUES (%s, %s, %s, %s, %s, %s) "
+        f"RETURNING {_REQUEST_COLUMNS}",
+        (f"pwa-{secrets.token_hex(6)}", body.subject, body.kind, body.focus.strip(), body.items, device.id),
+    ).fetchone()
+    return _request_json(row)
+
+
+@app.get("/api/requests")
+def list_requests(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
+    rows = conn.execute(f"SELECT {_REQUEST_COLUMNS} FROM sheet_requests ORDER BY created_at DESC LIMIT 20").fetchall()
+    return [_request_json(row) for row in rows]
+
+
 # --------------------------------------------------------------- notifications
 
 
@@ -409,11 +448,29 @@ def publish_batch(
     agent: nip98.Agent = Depends(nip98.require_agent),
     conn: psycopg.Connection = Depends(get_conn),
 ) -> dict:
-    """The evening's sheets, all or nothing. Each one shows from its own display date."""
+    """The evening's sheets, all or nothing. Each one shows from its own display date. The
+    requests answered tonight are updated, and the parent hears about them at once."""
+    answered = []
     with conn.transaction():
         for sheet in batch.sheets:
             save_sheet(conn, sheet)
-    return {"published": [sheet.id for sheet in batch.sheets]}
+        for update in batch.requests:
+            row = conn.execute(
+                "UPDATE sheet_requests SET status = %s, sheet_id = %s, reason = %s, handled_at = now() "
+                "WHERE id = %s RETURNING subject, focus",
+                (update.status, update.sheet_id, update.reason, update.id),
+            ).fetchone()
+            if row is not None:
+                answered.append((update, row))
+    for update, (subject, focus) in answered:
+        what = f" : {focus}" if focus else ""
+        push.send(conn, {
+            "title": "Révisions : fiche demandée prête" if update.status == "done" else "Révisions : fiche demandée impossible",
+            "body": f"{subject}{what}" if update.status == "done" else f"{subject}{what}. {update.reason[:200]}",
+            "url": f"/#/sheet/{update.sheet_id}" if update.sheet_id else "/#/requests",
+            "tag": f"request-{update.id}",
+        }, roles=("parent",))
+    return {"published": [sheet.id for sheet in batch.sheets], "requests": len(answered)}
 
 
 @app.get("/api/feedback")
@@ -444,6 +501,11 @@ def feedback(
         f"WHERE {received('r.created_at')} ORDER BY r.id",
         window,
     ).fetchall()
+    requests = conn.execute(
+        f"SELECT id, subject, kind, focus, items, created_at FROM sheet_requests WHERE {received('created_at')} "
+        "ORDER BY created_at",
+        window,
+    ).fetchall()
     finishes = conn.execute(
         "SELECT f.client_id, f.sheet_id, d.role, f.score, f.total, f.to_review, f.finished_at "
         "FROM sheet_finishes f JOIN devices d ON d.id = f.device_id "
@@ -466,6 +528,10 @@ def feedback(
             {"id": r[0], "sheet_id": r[1], "role": r[2], "score": r[3], "total": r[4], "to_review": r[5],
              "finished_at": r[6]}
             for r in finishes
+        ],
+        "requests": [
+            {"id": r[0], "subject": r[1], "kind": r[2], "focus": r[3], "items": r[4], "created_at": r[5]}
+            for r in requests
         ],
     }
 

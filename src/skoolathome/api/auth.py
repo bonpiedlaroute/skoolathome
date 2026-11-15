@@ -18,6 +18,10 @@ COOKIE_NAME = "skoolathome_session"
 COOKIE_MAX_AGE = int(timedelta(days=400).total_seconds())  # the longest lifetime browsers accept
 PAIRING_TOKEN_LIFETIME = timedelta(minutes=10)
 MIN_BOOTSTRAP_CODE_LENGTH = 16
+# A pairing code is typed by hand on a computer: no 0/O nor 1/I. 8 characters out of 32 are 40 bits,
+# for ten minutes and a single use: far out of reach of guessing.
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+CODE_LENGTH = 8
 
 
 @dataclass(frozen=True)
@@ -70,14 +74,20 @@ def pair_with_bootstrap_code(conn: psycopg.Connection, code: str, label: str) ->
         return create_device(conn, "parent", label)
 
 
+def normalize_code(text: str) -> str:
+    """« k7pm 4qxn », « K7PM-4QXN »: the same code."""
+    return "".join(c for c in text.upper() if c.isalnum())
+
+
 def create_pairing_token(conn: psycopg.Connection, creator: Device, role: str, label: str) -> str:
-    token = secrets.token_urlsafe(24)
+    """A short code, shown as K7PM-4QXN: typed on a computer, or read from the QR code's link."""
+    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
     conn.execute(
         "INSERT INTO pairing_tokens (token_hash, role, label, created_by, expires_at) "
         "VALUES (%s, %s, %s, %s, now() + %s)",
-        (sha256(token), role, label, creator.id, PAIRING_TOKEN_LIFETIME),
+        (sha256(raw), role, label, creator.id, PAIRING_TOKEN_LIFETIME),
     )
-    return token
+    return f"{raw[:4]}-{raw[4:]}"
 
 
 def pair_with_token(conn: psycopg.Connection, token: str) -> tuple[Device, str]:
@@ -87,7 +97,7 @@ def pair_with_token(conn: psycopg.Connection, token: str) -> tuple[Device, str]:
             "UPDATE pairing_tokens SET used_at = now() "
             "WHERE token_hash = %s AND used_at IS NULL AND expires_at > now() "
             "RETURNING role, label",
-            (sha256(token),),
+            (sha256(normalize_code(token)),),
         ).fetchone()
         if row is None:
             raise HTTPException(403, "invalid, expired or already used token")

@@ -3,6 +3,7 @@ whose numbers the code recomputes. Codes are École Directe's."""
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date
 
 SUBJECT_LABELS = {
@@ -17,6 +18,27 @@ EXCLUDED_SUBJECTS = frozenset({"EPS", "AEAID", "VIE-S", "VICLA", "ETU", "DST", "
 COMPUTATIONAL_SUBJECTS = frozenset({"MATHS"})
 
 _DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+# What a parent types, without accents, to subject codes.
+_ALIASES = {
+    "maths": "MATHS", "math": "MATHS", "mathematiques": "MATHS", "francais": "FRANC", "histoire": "HI-GE",
+    "geographie": "HI-GE", "geo": "HI-GE", "histoire-geo": "HI-GE", "histoire-geographie": "HI-GE", "hg": "HI-GE",
+    "anglais": "AGL1", "physique": "PH-CH", "physique-chimie": "PH-CH", "chimie": "PH-CH", "svt": "SVT",
+    "techno": "TECHN", "technologie": "TECHN", "latin": "LCALA", "espagnol": "ESP", "musique": "EDMUS",
+    "arts-plastiques": "A-PLA",
+}
+
+
+def _plain(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text.lower().strip())
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn").replace(" ", "-")
+
+
+def code_of(text: str) -> str | None:
+    """« maths », « Histoire-géo », « HI-GE » → the École Directe code; None when unknown."""
+    name = _plain(text)
+    by_code = {code.lower(): code for code in SUBJECT_LABELS}
+    by_label = {_plain(value): code for code, value in SUBJECT_LABELS.items()}
+    return _ALIASES.get(name) or by_code.get(name) or by_label.get(name)
 
 
 def label(code: str, raw: str = "") -> str:

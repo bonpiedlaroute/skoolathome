@@ -10,7 +10,18 @@
   let devices = $state<Device[]>([]);
   let role = $state<"child" | "parent">("child");
   let label = $state("iPad");
-  let qr = $state<{ qr_svg: string; expires_in_minutes: number } | null>(null);
+  let qr = $state<{ code: string; url: string; qr_svg: string; expires_in_minutes: number } | null>(null);
+  let copied = $state(false);
+
+  async function copyLink() {
+    if (!qr) return;
+    try {
+      await navigator.clipboard.writeText(qr.url);
+      copied = true;
+    } catch {
+      copied = false; // the link stays visible: select it by hand
+    }
+  }
   let error = $state("");
 
   const when = (iso?: string | null) =>
@@ -64,6 +75,7 @@
 
 <form class="card" onsubmit={createQr}>
   <h2 style="margin-top:0">Associer un nouvel appareil</h2>
+  <p class="muted">Pour un autre parent, ton ordinateur, ou la tablette de l'enfant.</p>
   <div class="row">
     <select bind:value={role} style="flex:1" aria-label="Rôle">
       <option value="child">Enfant</option>
@@ -71,16 +83,19 @@
     </select>
     <input type="text" bind:value={label} style="flex:2" maxlength="60" aria-label="Nom de l'appareil" />
   </div>
-  <p><button class="primary" disabled={label.trim() === ""}>Créer le QR code</button></p>
+  <p><button class="primary" disabled={label.trim() === ""}>Créer le code</button></p>
   {#if qr}
+    <p>Sur l'appareil à associer, ouvre <strong>{location.host}</strong> et tape ce code :</p>
+    <p class="code">{qr.code}</p>
+    <p class="muted">Valable {qr.expires_in_minutes} minutes, une seule fois.</p>
+    <p class="muted">Sur une tablette ou un téléphone, tu peux aussi scanner ce QR code avec l'appareil photo :</p>
     <div class="qr">{@html qr.qr_svg}</div>
-    <p class="muted">
-      Scanne-le avec l'appareil photo de l'appareil à associer. Valable {qr.expires_in_minutes} minutes, une seule fois.
-    </p>
+    <p><button type="button" onclick={copyLink}>{copied ? "Lien copié" : "Copier le lien, pour l'envoyer par message"}</button></p>
   {/if}
 </form>
 
 <style>
   .qr { background: #fff; padding: 0.5rem; border-radius: 12px; display: inline-block; }
   .qr :global(svg) { display: block; width: min(16rem, 70vw); height: auto; }
+  .code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; font-family: monospace; margin: 0.4rem 0; }
 </style>

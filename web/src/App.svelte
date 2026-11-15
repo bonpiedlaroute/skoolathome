@@ -5,6 +5,7 @@
   import Home from "./components/Home.svelte";
   import Pair from "./components/Pair.svelte";
   import PrintSheet from "./components/PrintSheet.svelte";
+  import Requests from "./components/Requests.svelte";
   import SheetRunner from "./components/SheetRunner.svelte";
   import { api, ApiError } from "./lib/api";
   import type { Device } from "./lib/types";
@@ -95,6 +96,9 @@
   {/key}
 {:else if route === "/devices" && device.role === "parent"}
   <Devices onexit={() => go("/")} />
+{:else if route === "/requests" && device.role === "parent"}
+  <Requests onexit={() => go("/")} onopen={(id) => go(sheetPath(id))} />
 {:else}
-  <Home {device} onopen={(id, how) => go(sheetPath(id, how ?? ""))} ondevices={() => go("/devices")} />
+  <Home {device} onopen={(id, how) => go(sheetPath(id, how ?? ""))} ondevices={() => go("/devices")}
+    onrequests={() => go("/requests")} />
 {/if}

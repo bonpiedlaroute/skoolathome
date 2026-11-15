@@ -64,6 +64,9 @@ def build(run_date: date, state: dict) -> dict:
         problems.append(f"{_plural(len(documents['failed']), 'document')} non indexé(s)")
 
     count = _plural(len(made), "fiche")
+    requested = sum(1 for o in made if o["task"].get("request_id"))
+    if requested:
+        count += f" dont {requested} demandée{'s' if requested > 1 else ''}"
     if made and published.get("skipped"):
         count += " (non publiées)"
     parts = [count]
@@ -82,7 +85,7 @@ def build(run_date: date, state: dict) -> dict:
     return {
         "run_date": run_date.isoformat(),
         "status": status,
-        "title": f"Révisions : soirée {status.upper()}",
+        "title": f"Révisions : {'fiches demandées' if state.get('only_requests') else 'soirée'} {status.upper()}",
         "body": body[:600],
         "details": {
             "sheets": [{"id": o["task"]["id"], "subject": o["task"]["subject"], "type": o["task"]["kind"],

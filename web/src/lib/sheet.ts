@@ -24,3 +24,18 @@ export function basedOn(sheet: Pick<Sheet, "sources" | "source_labels">): string
 export function quoteSource(sheet: Pick<Sheet, "source_labels">, item: Pick<Item, "quote">): string {
   return (item.quote && sheet.source_labels?.[item.quote.source_id]) || "ton cours";
 }
+
+/** Subjects a parent can ask a sheet for: École Directe code, name. */
+export const SUBJECTS: [string, string][] = [
+  ["MATHS", "Mathématiques"],
+  ["FRANC", "Français"],
+  ["HI-GE", "Histoire-géographie"],
+  ["AGL1", "Anglais"],
+  ["ESP", "Espagnol"],
+  ["SVT", "SVT"],
+  ["PH-CH", "Physique-chimie"],
+  ["TECHN", "Technologie"],
+  ["LCALA", "Latin"],
+];
+
+export const subjectName = (code: string): string => SUBJECTS.find(([c]) => c === code)?.[1] ?? code;

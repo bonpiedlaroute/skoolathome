@@ -13,34 +13,18 @@ from __future__ import annotations
 
 import hashlib
 import re
-import unicodedata
 from pathlib import Path
 
 from skoolathome.material.extract import SUPPORTED_SUFFIXES, extract
 from skoolathome.schema.material import CourseDocument, DocumentRef, Page
-from skoolathome.subjects import SUBJECT_LABELS
+from skoolathome.subjects import code_of
 
 DEFAULT_ROOT = Path("data/manual")
 _FIRST_PAGE = re.compile(r"(?:^|[-_ .])p\.?\s?(\d{1,4})(?=$|[-_ .])", re.IGNORECASE)
-# Folder names a parent would type, without accents, to subject codes.
-_ALIASES = {
-    "maths": "MATHS", "math": "MATHS", "francais": "FRANC", "histoire": "HI-GE", "geographie": "HI-GE",
-    "histoire-geo": "HI-GE", "histoire-geographie": "HI-GE", "hg": "HI-GE", "anglais": "AGL1",
-    "physique": "PH-CH", "physique-chimie": "PH-CH", "svt": "SVT", "techno": "TECHN", "technologie": "TECHN",
-    "latin": "LCALA", "espagnol": "ESP", "musique": "EDMUS", "arts-plastiques": "A-PLA",
-}
-
-
-def _plain(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text.lower())
-    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn").replace(" ", "-")
 
 
 def subject_of(folder: str) -> str | None:
-    name = _plain(folder)
-    by_code = {code.lower(): code for code in SUBJECT_LABELS}
-    by_label = {_plain(text): code for code, text in SUBJECT_LABELS.items()}
-    return _ALIASES.get(name) or by_code.get(name) or by_label.get(name)
+    return code_of(folder)
 
 
 def first_page(name: str) -> int:
