@@ -13,10 +13,16 @@ export interface ParentGuide {
   oral_followup: string;
 }
 
+export interface Quote {
+  source_id: string;
+  excerpt: string; // copied word for word from the source
+}
+
 export interface Item {
   id: string;
   type: ItemType;
   prompt: string;
+  quote?: Quote | null;
   answer: Answer;
   variants: Answer[];
   check: { mode: CheckMode; tolerance: string };
@@ -30,14 +36,26 @@ export interface Item {
   difficulty: number;
 }
 
+export type SheetType = "exercises" | "lesson_recap" | "quick_quiz" | "test_revision";
+
+/** The « cours en clair » of a lesson_recap sheet, read before its questions. */
+export interface Recap {
+  summary: string;
+  example: { statement: string; solution: string; quote?: Quote | null };
+  key_points: string[];
+}
+
 export interface Sheet {
   id: string;
   subject: string;
   title: string;
-  type: string;
+  type: SheetType | string;
   sources: string[];
+  source_labels?: Record<string, string>; // "lesson:2026-11-04:HI-GE" -> "ton cours du mardi 4/11"
   visible_from: string;
+  due_by?: string | null;
   estimated_minutes: number;
+  recap?: Recap | null;
   items: Item[];
 }
 

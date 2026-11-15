@@ -1,26 +1,15 @@
-"""Lessons as the evening graph sees them: the tasks of T15, the sources of a task, the summaries."""
+"""Lessons as the evening graph sees them: the text of a lesson, its summary, the homework of its day."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 import psycopg
 
-SUBJECT_LABELS = {
-    "MATHS": "Mathématiques", "FRANC": "Français", "AGL1": "Anglais", "HI-GE": "Histoire-géographie",
-    "PH-CH": "Physique-chimie", "SVT": "SVT", "TECHN": "Technologie", "LCALA": "Latin",
-    "EDMUS": "Éducation musicale", "A-PLA": "Arts plastiques",
-}
-# Nothing to revise from what is written there.
-EXCLUDED_SUBJECTS = {"EPS", "AEAID", "VIE-S"}
-# Numbers are made up by the model and recomputed by the code (ARCHITECTURE.md §5.4).
-COMPUTATIONAL_SUBJECTS = {"MATHS"}
+from skoolathome.subjects import label
 
-MIN_CONTENT_CHARS = 120  # below that, not enough to write a sheet from
 SUMMARY_MIN_CHARS = 600  # below that, the lesson is its own summary: no model call
-MAX_TASKS = 3            # until the evening plan (T19) decides
-TARGET_MINUTES = 8
 
 
 @dataclass(frozen=True)
@@ -41,7 +30,7 @@ class Lesson:
 
     @property
     def label(self) -> str:
-        return SUBJECT_LABELS.get(self.subject_code, self.subject.capitalize())
+        return label(self.subject_code, self.subject)
 
 
 _COLUMNS = "source, student_id, source_id, day, subject_code, subject, content, fingerprint"
@@ -57,43 +46,14 @@ def get(conn: psycopg.Connection, student_id: str, source: str, source_id: str) 
     return found[0] if found else None
 
 
-def usable(lesson: Lesson) -> bool:
-    return lesson.subject_code not in EXCLUDED_SUBJECTS and len(lesson.content) >= MIN_CONTENT_CHARS
-
-
-def fixed_tasks(conn: psycopg.Connection, student_id: str, run_date: date, lesson_ids: list[str] | None = None) -> list[dict]:
-    """The tasks of T15, written in code: an exercise sheet for the richest lessons of the last
-    school day. T19 replaces this with the evening plan (rules × timetable)."""
-    if lesson_ids:
-        chosen = _lessons(conn, "student_id = %s AND source_id = ANY(%s) ORDER BY day, subject_code",
-                          (student_id, lesson_ids))
-    else:
-        last_day = conn.execute(
-            "SELECT max(day) FROM school.lessons WHERE student_id = %s AND day <= %s AND NOT is_empty "
-            "AND length(content) >= %s", (student_id, run_date, MIN_CONTENT_CHARS),
-        ).fetchone()[0]
-        if last_day is None:
-            return []
-        candidates = _lessons(conn, "student_id = %s AND day = %s ORDER BY length(content) DESC, subject_code",
-                              (student_id, last_day))
-        chosen = [lesson for lesson in candidates if usable(lesson)][:MAX_TASKS]
-    visible_from = run_date + timedelta(days=1)
-    return [
-        {
-            "id": f"{lesson.day.isoformat()}-{lesson.subject_code.lower()}-exercises",
-            "kind": "exercises",
-            "subject_code": lesson.subject_code,
-            "subject": lesson.label,
-            "source": lesson.source,
-            "source_id": lesson.source_id,
-            "source_key": lesson.key,
-            "visible_from": visible_from.isoformat(),
-            "target_minutes": TARGET_MINUTES,
-            "computational": lesson.subject_code in COMPUTATIONAL_SUBJECTS,
-            "rule": "fixed-t15",  # until T19: no rule, a fixed choice
-        }
-        for lesson in chosen
-    ]
+def homework_of(conn: psycopg.Connection, student_id: str, subject_code: str, day: date) -> list[str]:
+    """What was given on that day: when the lesson itself is empty, it says what the class did
+    (« apprendre la leçon p. 86 ») and helps find the right pages."""
+    rows = conn.execute(
+        "SELECT text FROM school.homework WHERE student_id = %s AND subject_code = %s AND given_on = %s "
+        "AND text <> ''", (student_id, subject_code, day),
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 # ---------------------------------------------------------------------- summaries

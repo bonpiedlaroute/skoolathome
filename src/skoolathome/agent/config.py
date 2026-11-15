@@ -24,9 +24,10 @@ class Model:
     model: str
     family: str
     quantization: str
-    temperature: float
-    max_tokens: int
+    temperature: float = 0.0
+    max_tokens: int = 0
     reasoning_effort: str | None = None
+    dimensions: int | None = None  # embedding models only
 
     def metadata(self, engine: Engine) -> dict[str, str]:
         """What every trace carries (ARCHITECTURE.md §14.5): filter the scores by model or engine."""

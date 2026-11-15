@@ -200,6 +200,27 @@ def test_an_invalid_sheet_is_refused_after_the_signature(agent, api_db):
     assert api_db.execute("SELECT count(*) FROM sheets").fetchone()[0] == 0
 
 
+REPORT = {"run_date": "2026-11-13", "status": "ok", "title": "Révisions : soirée OK",
+          "body": "OK : 3 fiches, contrôle jeudi (Mathématiques). RAM max 14,2/30,8 Go, swap 2,1 Go.",
+          "details": {"abstentions": []}}
+
+
+def test_the_evening_report_is_kept_and_pushed_to_the_parents(agent, api_db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: sent.append((payload, kw)) or {"sent": 1})
+    assert agent.report(REPORT) == {"push": {"sent": 1}}
+    agent.report({**REPORT, "status": "ko", "title": "Révisions : soirée KO", "body": "KO : collecte en échec."})
+    assert api_db.execute("SELECT status, title FROM evening_reports").fetchall() == [("ko", "Révisions : soirée KO")]
+    payload, options = sent[0]
+    assert payload["title"] == "Révisions : soirée OK" and payload["tag"] == "evening-2026-11-13"
+    assert options == {"roles": ("parent",)}
+
+
+def test_an_unsigned_report_is_refused(api_db):
+    response = TestClient(app, base_url=BASE).post("/api/evening-reports", json=REPORT)
+    assert response.status_code in (401, 503)
+
+
 def test_payload_hash_is_the_sha256_of_the_body():
     body = batch_body(sheet())
     assert nip98_tags("u", "POST", body)[2] == ["payload", hashlib.sha256(body).hexdigest()]

@@ -32,10 +32,13 @@ def item(**fields) -> dict:
     return {**base, **fields}
 
 
+TASK = {"id": "s", "subject": "Mathématiques", "kind": "exercises", "rule": "daily", "rule_version": 1,
+        "visible_from": "2026-11-14", "due_by": None}
+
+
 def sheet(*items: dict, minutes_target: int = 8) -> Sheet:
     written = draft.DraftSheet.model_validate({"title": "Essai", "items": list(items)})
-    return draft.to_sheet(written, sheet_id="s", subject="Mathématiques", source_id=SOURCE, kind="exercises",
-                          visible_from=date(2026, 11, 14), trace_id="t")
+    return draft.to_sheet(written, task=TASK, sources=SOURCES, labels={SOURCE: "ton cours du jeudi 12/11"}, trace_id="t")
 
 
 NUMBER = item(type="number", prompt="Calcule 2 × 2 × 3 × 5.", quote="on le divise successivement par 2, puis 3, puis 5",
@@ -190,4 +193,74 @@ def test_a_sheet_too_long_fails():
 
 def test_run_all_names_every_guard():
     names = [r.name for r in guards.run_all(sheet(item()), SOURCES, 8, computational=True)]
-    assert names == ["citation", "answer_in_quote", "maths", "correction", "duration"]
+    assert names == ["citation", "answer_in_quote", "maths", "correction", "duration", "structure"]
+    with_focus = guards.run_all(sheet(item()), SOURCES, 8, computational=True, concepts=["nombres premiers"])
+    assert with_focus[-1].name == "focus" and with_focus[-1].ok
+
+
+# -------------------------------------------------------------------- formats (T20)
+
+OTHER = "doc:3:p86"
+PAGE = "Un multiple de 3 est un nombre dont la somme des chiffres est divisible par 3. Exemple : 123."
+
+
+def test_the_code_finds_which_source_a_quote_comes_from():
+    written = draft.DraftSheet.model_validate({"title": "Essai", "items": [
+        item(), item(prompt="Comment savoir si un nombre est multiple de 3 ?", quote="la somme des chiffres est divisible par 3",
+             answer="la somme des chiffres est divisible par 3", variants=[])]})
+    built = draft.to_sheet(written, task=TASK, sources={SOURCE: LESSON, OTHER: PAGE},
+                           labels={SOURCE: "ton cours du jeudi 12/11", OTHER: "ton manuel p. 86"}, trace_id="t")
+    assert [i.quote.source_id for i in built.items] == [SOURCE, OTHER]
+    assert built.sources == [SOURCE, OTHER]
+    assert built.source_labels == {SOURCE: "ton cours du jeudi 12/11", OTHER: "ton manuel p. 86"}
+    assert guards.citations(built, {SOURCE: LESSON, OTHER: PAGE}).ok
+
+
+def quiz(*items: dict) -> Sheet:
+    written = draft.DraftSheet.model_validate({"title": "Interro", "items": list(items)})
+    return draft.to_sheet(written, task={**TASK, "kind": "quick_quiz"}, sources=SOURCES, labels={}, trace_id="t")
+
+
+def test_a_quick_quiz_has_five_short_questions():
+    assert guards.structure(quiz(*[item()] * 5)).ok
+    result = guards.structure(quiz(*[item()] * 4, item(type="open", answer="", variants=[])))
+    assert not result.ok and "q5" in result.reasons[0]
+    assert "5 questions attendues, pas 3" in guards.structure(quiz(*[item()] * 3)).reasons[0]
+    with pytest.raises(ValueError):  # the shape given to the model already says five
+        draft.DraftQuiz.model_validate({"title": "Interro", "items": [item()] * 4})
+
+
+RECAP = {
+    "title": "Les nombres premiers",
+    "summary": "Un nombre premier a exactement deux diviseurs : 1 et lui-même.",
+    "example": {"statement": "Décompose 60.", "quote": "on le divise successivement par 2, puis 3, puis 5",
+                "solution": "60 = 2 × 2 × 3 × 5"},
+    "key_points": ["Deux diviseurs exactement.", "2 est premier.", "On divise par 2, 3, 5…"],
+    "items": [item(), CHOICE],
+}
+
+
+def recap(**changes) -> Sheet:
+    written = draft.DraftRecap.model_validate({**RECAP, **changes})
+    return draft.to_sheet(written, task={**TASK, "kind": "lesson_recap"}, sources=SOURCES, labels={}, trace_id="t")
+
+
+def test_a_lesson_recap_has_its_parts_and_its_example_is_cited():
+    built = recap()
+    assert built.recap.example.quote.source_id == SOURCE
+    assert built.estimated_minutes == 5  # 3 min of reading + 1 + 0.75
+    assert guards.structure(built).ok and guards.citations(built, SOURCES).ok
+    invented = recap(example={**RECAP["example"], "quote": "Euclide a prouvé qu'il y en a une infinité"})
+    assert "exemple" in guards.citations(invented, SOURCES).reasons[0]
+    too_long = recap(summary="Une phrase. " * 150)
+    assert "résumé trop long" in guards.structure(too_long).reasons[0]
+    with pytest.raises(ValueError):  # three points, two questions: imposed on the model
+        draft.DraftRecap.model_validate({**RECAP, "key_points": ["un", "deux"]})
+    with pytest.raises(ValueError):
+        Sheet.model_validate({**built.model_dump(), "recap": None})
+
+
+def test_a_missed_concept_must_come_back():
+    assert guards.focus(sheet(item(), NUMBER), ["nombres premiers"]).ok
+    result = guards.focus(sheet(item()), ["nombres premiers", "décomposition en facteurs premiers"])
+    assert not result.ok and "décomposition en facteurs premiers" in result.reasons[0]

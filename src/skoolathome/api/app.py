@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -75,6 +75,16 @@ class FinishRequest(Body):
 
 class BatchRequest(Body):
     sheets: list[Sheet] = Field(min_length=1, max_length=50)
+
+
+class EveningReport(Body):
+    """The laptop's end-of-evening report (T17): « OK : 3 fiches, contrôle jeudi » or « KO : motif »."""
+
+    run_date: date
+    status: Literal["ok", "ko"]
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=600)
+    details: dict = {}
 
 
 class PushKeys(Body):
@@ -458,6 +468,25 @@ def feedback(
             for r in finishes
         ],
     }
+
+
+@app.post("/api/evening-reports", status_code=201)
+def evening_report(
+    report: EveningReport,
+    agent: nip98.Agent = Depends(nip98.require_agent),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """Kept for the parent view, and pushed at once to the parent devices. A second report for
+    the same evening (a run started again) replaces the first one."""
+    conn.execute(
+        "INSERT INTO evening_reports (run_date, status, title, body, details) VALUES (%s, %s, %s, %s, %s) "
+        "ON CONFLICT (run_date) DO UPDATE SET status = EXCLUDED.status, title = EXCLUDED.title, "
+        "body = EXCLUDED.body, details = EXCLUDED.details, received_at = now()",
+        (report.run_date, report.status, report.title, report.body, Jsonb(report.details)),
+    )
+    sent = push.send(conn, {"title": report.title, "body": report.body, "url": "/",
+                            "tag": f"evening-{report.run_date}"}, roles=("parent",))
+    return {"push": sent}
 
 
 def save_sheet(conn: psycopg.Connection, sheet: Sheet) -> None:

@@ -1,10 +1,10 @@
-<!-- A sheet of exercises from the student's own lesson (T15). Variables: subject, item_count, target_minutes, sources, feedback. -->
+<!-- A sheet of exercises from the student's own lesson (T15, format exercises). Variables: subject, item_count, target_minutes, sources, feedback, context. -->
 <!-- role: system -->
-Tu écris une fiche d'exercices pour un élève de 5e, à partir de SON cours. Le cours est donné entre les balises <cours> et </cours>.
+Tu écris une fiche d'exercices pour un élève de 5e, à partir de SON cours. Le cours est donné entre les balises <cours> et </cours>, source par source : chaque source commence par son nom entre crochets, par exemple [lesson:2026-11-12:MATHS] pour une séance ou [doc:3:p86] pour une page de manuel.
 
 Règles, toutes obligatoires :
 
-1. Chaque question porte sur ce qui est écrit dans le cours, et sur rien d'autre.
+1. Chaque question porte sur ce qui est écrit dans le cours, et sur rien d'autre. Ne pose jamais de question sur l'organisation de la classe : durée des séances, compétences travaillées, consignes, matériel, feuille de route. Seulement sur ce que l'élève doit savoir ou savoir faire. Si le cours ne contient que de l'organisation, pose moins de questions plutôt que des questions inutiles.
 2. Chaque question a une citation, `quote` : un passage du cours copié mot pour mot, sans rien changer, qui justifie la question. Au moins cinq mots.
 3. Pour une question de cours, de définition ou de date, la réponse `answer` figure telle quelle dans la citation.
 4. En mathématiques, pour un calcul, invente de nouveaux nombres et écris dans `expression` le calcul qui donne la réponse, avec seulement des nombres, + - * / et des parenthèses. Par exemple `3/4 + 1/6`. Le calcul sera refait par un programme.
@@ -22,6 +22,7 @@ Règles, toutes obligatoires :
 <!-- role: user -->
 Matière : {{subject}}
 Fiche : {{item_count}} questions, environ {{target_minutes}} minutes en tout. Varie les types de questions.
+{{context}}
 
 <cours>
 {{sources}}

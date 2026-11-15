@@ -1,7 +1,8 @@
-# Evening run: collect École Directe, then write the summary and notify.
-# Install: see tmp/T06-controles-et-minuteur.md
+# Evening run (T17): the whole evening graph. Collect École Directe (one login), fetch the
+# feedback, plan, generate and judge the sheets, publish them signed, send the report.
+# Install: see tmp/T06-controles-et-minuteur.md and tmp/T17-correcteur-publication-rapport.md
 [Unit]
-Description=skoolathome evening run (collect and summary)
+Description=skoolathome evening run (collect, sheets, publish, report)
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -9,6 +10,10 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/boulot/dev/skoolathome
 ExecStart=%h/.local/bin/uv run --frozen skoolathome evening
-# One attempt per evening: never retry a login in a loop.
+# One attempt per evening: never retry a login in a loop. A run stopped half-way (laptop
+# asleep, timeout) resumes from its checkpoints at the next manual or timed start.
 Restart=no
-TimeoutStartSec=15min
+# At about 3.4 tokens/s, a sheet takes 5 to 8 minutes, more with regenerations (T14 bench).
+TimeoutStartSec=3h
+# The model runs in Ollama: the run itself stays light, let it give way to the desktop.
+Nice=5

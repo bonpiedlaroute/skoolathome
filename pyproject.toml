@@ -24,6 +24,8 @@ agent = [
     "langfuse>=5.2,<6",
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-postgres>=3.2,<4",
+    "pymupdf>=1.26",
+    "pyyaml>=6",
     "rapidfuzz>=3.14",
     "sympy>=1.14",
 ]

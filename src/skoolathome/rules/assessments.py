@@ -30,6 +30,15 @@ _NOT_A_TEST = re.compile(
     r")"
 )
 
+# No keyword, but the homework may still hide a test: a quiz, something to learn or recite.
+# The model reads these, as a last resort (T19).
+_AMBIGUOUS = re.compile(
+    r"\b("
+    r"qcm|quiz|questionnaires?|interroge\w*|oral|reciter|par coeur|"
+    r"apprendre|rapprendre|reapprendre|reviser|revoir|relire|connaitre|savoir|etre capable"
+    r")\b"
+)
+
 _ASSESSMENT_SLOT = re.compile(r"\b(ds|dst|devoirs? surveilles?|devoir sur table|examens?|brevet blanc)\b")
 
 
@@ -48,6 +57,12 @@ def detect(homework: Homework) -> tuple[Assessment, str]:
     if _KEYWORDS.search(_NOT_A_TEST.sub(" ", text)):
         return "yes", "keywords"
     return "no", ""
+
+
+def is_ambiguous(text: str) -> bool:
+    """Not detected as a test by the rules, but worth asking the model."""
+    normalized = _normalize(text)
+    return bool(text) and not _KEYWORDS.search(_NOT_A_TEST.sub(" ", normalized)) and bool(_AMBIGUOUS.search(normalized))
 
 
 def is_assessment_slot(slot: TimetableSlot) -> bool:

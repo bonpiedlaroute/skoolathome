@@ -51,10 +51,11 @@ def authorization_header(event: Event) -> str:
 
 
 class BunkerSession:
-    """One NIP-46 session for a whole evening.
+    """One NIP-46 session for one step of the evening.
 
-    The bunker sees `connect` and `get_public_key` once, then one `sign_event` per call:
-    fetching the feedback and publishing the batch cost two signatures, not two sessions.
+    The bunker sees `connect` and `get_public_key` once, then one `sign_event` per call. The
+    evening graph opens one at the start (feedback) and one per call at the end (batch, report):
+    an hour of generation in between, and no connection left idle that long.
     """
 
     def __init__(self, conf: dict | None = None) -> None:

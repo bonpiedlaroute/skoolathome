@@ -69,3 +69,7 @@ class ApiClient:
 
     def feedback(self, since: int = 0) -> dict:
         return self._call("GET", "/api/feedback", params={"since": since})
+
+    def report(self, report: dict) -> dict:
+        """The end-of-evening report: stored online and pushed to the parent devices."""
+        return self._call("POST", "/api/evening-reports", report)

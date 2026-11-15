@@ -4,7 +4,9 @@
 
   import { api } from "../lib/api";
   import { renderText } from "../lib/math";
+  import { basedOn, formatLabel } from "../lib/sheet";
   import type { Item, Sheet } from "../lib/types";
+  import RecapView from "./RecapView.svelte";
 
   let { id, onexit }: { id: string; onexit: () => void } = $props();
 
@@ -33,10 +35,12 @@
 {:else if sheet}
   <article class="paper">
     <header>
-      <div class="muted">{sheet.subject}</div>
+      <div class="muted">{sheet.subject} · {formatLabel(sheet.type)}</div>
       <h1>{sheet.title}</h1>
+      {#if basedOn(sheet)}<p class="muted">{basedOn(sheet)}</p>{/if}
       <p>Prénom : ____________________ &nbsp;&nbsp; Date : ____________</p>
     </header>
+    {#if sheet.recap}<RecapView recap={sheet.recap} paper />{/if}
     <ol>
       {#each sheet.items as it}
         <li class="question">

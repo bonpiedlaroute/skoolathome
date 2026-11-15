@@ -6,6 +6,7 @@ push`. Every trace records which version was used: a Langfuse version number, or
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,10 +48,15 @@ def get(name: str, label: str = "production") -> Prompt:
     lf = tracing.client()
     if lf is None:
         return Prompt(name, None, fallback)
+    logger = logging.getLogger("langfuse")
+    level = logger.level
+    logger.setLevel(logging.ERROR)  # a prompt not pushed yet is not an incident: the trace says "local"
     try:
         found = lf.get_prompt(name, label=label, type="chat", fallback=fallback, fetch_timeout_seconds=5, max_retries=1)
     except Exception:  # Langfuse stopped or unreachable: the evening goes on with the local copy
         return Prompt(name, None, fallback)
+    finally:
+        logger.setLevel(level)
     if found.is_fallback:
         return Prompt(name, None, fallback)
     messages = [{"role": m["role"], "content": m["content"]} for m in found.prompt]

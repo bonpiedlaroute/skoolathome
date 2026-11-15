@@ -8,8 +8,10 @@
   import { check } from "../lib/check";
   import { renderText } from "../lib/math";
   import { MAX_SOLO_TRIES, noProgress, soloDone, toReview, type Counters } from "../lib/progress";
+  import { basedOn, formatLabel, quoteSource } from "../lib/sheet";
   import type { Item, Rating, Sheet } from "../lib/types";
   import ItemInput from "./ItemInput.svelte";
+  import RecapView from "./RecapView.svelte";
   import ReportDialog from "./ReportDialog.svelte";
 
   let {
@@ -203,11 +205,16 @@
   <p class="muted">Chargement…</p>
 {:else if screen === "choose"}
   <div class="card">
-    <div class="muted">{sheet.subject}</div>
+    <div class="muted">{sheet.subject} · {formatLabel(sheet.type)}</div>
     <h1 style="margin-top:0.3rem">{sheet.title}</h1>
     <p class="muted">
       {sheet.items.length} questions · environ {sheet.estimated_minutes} min{doneCount ? ` · ${doneCount} déjà faite${doneCount > 1 ? "s" : ""}` : ""}
     </p>
+    {#if basedOn(sheet)}<p class="muted">{basedOn(sheet)}</p>{/if}
+    {#if sheet.recap}
+      <RecapView recap={sheet.recap} />
+      <h2>Les questions</h2>
+    {/if}
     <div class="modes">
       <button class="primary big" onclick={() => begin("solo")}>Seul<small>correction tout de suite</small></button>
       <button class="big" onclick={() => begin("together")}>Ensemble<small>avec un parent</small></button>
@@ -244,6 +251,9 @@
 {:else if item}
   <div class="muted">{sheet.subject} · {sheet.title}</div>
   <progress value={position} max={order.length} aria-label="Avancement"></progress>
+  {#if sheet.recap}
+    <details class="no-print"><summary>Revoir le cours en clair</summary><RecapView recap={sheet.recap} /></details>
+  {/if}
   <div class="card">
     <div class="row spread">
       <span class="muted">Question {position + 1} sur {order.length}{reviewOnly ? " à revoir" : ""}</span>
@@ -297,6 +307,7 @@
             <p><strong>Réponse :</strong> {@html renderText(answerText(item))}</p>
           {/if}
           {#if item.solution && item.type !== "open"}<p>{@html renderText(item.solution)}</p>{/if}
+          {#if item.quote}<p class="quote">📖 Dans {quoteSource(sheet, item)} : « {@html renderText(item.quote.excerpt)} »</p>{/if}
           {#if toReview(counters(item), item.type)}<p>On la reverra ensemble.</p>{/if}
         </div>
         <button class="primary" onclick={() => nextSolo(index)}>Continuer</button>
@@ -318,6 +329,7 @@
         <div class="hint">
           {#if item.type !== "open"}<p><strong>Réponse :</strong> {@html renderText(answerText(item))}</p>{/if}
           {#if item.solution}<p>{@html renderText(item.solution)}</p>{/if}
+          {#if item.quote}<p class="quote">📖 Dans {quoteSource(sheet, item)} : « {@html renderText(item.quote.excerpt)} »</p>{/if}
         </div>
       {/if}
       {#if showGuide && item.parent_guide}
@@ -368,4 +380,7 @@
   .rate.partial { color: #b7791f; border-color: #b7791f; }
   .rate.bad { color: var(--bad); border-color: var(--bad); }
   .guide { border-left: 4px solid var(--accent); padding: 0.2rem 0 0.2rem 0.9rem; margin: 0.8rem 0; }
+  .quote { font-style: italic; opacity: 0.85; }
+  details { margin: 0.4rem 0 0.8rem; }
+  summary { cursor: pointer; min-height: 2.4rem; display: flex; align-items: center; }
 </style>

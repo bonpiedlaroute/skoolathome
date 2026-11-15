@@ -3,6 +3,7 @@
 
   import { api, warmCache } from "../lib/api";
   import { outbox } from "../lib/outbox.svelte";
+  import { formatLabel } from "../lib/sheet";
   import type { Device, SheetSummary } from "../lib/types";
   import Notifications from "./Notifications.svelte";
 
@@ -68,7 +69,7 @@
 {:else}
   {#each sheets as sheet (sheet.id)}
     <div class="card">
-      <div class="muted">{sheet.subject} · {day(sheet.visible_from)}</div>
+      <div class="muted">{sheet.subject} · {formatLabel(sheet.type)} · {day(sheet.visible_from)}</div>
       <h2 style="margin:0.3rem 0">{sheet.title}</h2>
       <div class="row spread">
         <span class={sheet.answered >= sheet.items ? "good" : "muted"}>{status(sheet)}</span>

@@ -15,12 +15,15 @@ from sympy import Rational
 from sympy.parsing.sympy_parser import parse_expr, rationalize, standard_transformations
 
 from skoolathome.correction import check, normalize, parse_number
-from skoolathome.schema.sheet import Item, Sheet
+from skoolathome.schema.sheet import Item, Quote, Sheet
 
 CITATION_THRESHOLD = 90  # rapidfuzz partial_ratio, 0 to 100: small differences of punctuation pass
 MIN_QUOTE_CHARS = 15
 ANSWER_THRESHOLD = 90
 DURATION_TOLERANCE = 1.25  # a sheet may last up to 25 % more than its target
+FOCUS_THRESHOLD = 80       # a missed concept is found in a question's concept or wording
+QUIZ_ITEMS, QUIZ_TYPES = 5, {"choice", "number", "short_answer", "fill_blank"}
+RECAP_ITEMS, RECAP_KEY_POINTS, RECAP_SUMMARY_CHARS = 2, 3, 1200
 
 # Questions whose answer must be read in the quote: course questions, definitions, dates.
 # Computations (with an expression) and open questions are checked otherwise.
@@ -40,7 +43,7 @@ class GuardResult:
         return {"name": self.name, "ok": self.ok, "reasons": self.reasons}
 
 
-def _flat(text: str) -> str:
+def flat(text: str) -> str:
     """Compare texts without accents, case, punctuation or extra spaces."""
     return " ".join(_PUNCTUATION.sub(" ", normalize(text)).split())
 
@@ -49,21 +52,25 @@ def _flat(text: str) -> str:
 
 
 def citations(sheet: Sheet, sources: dict[str, str], threshold: int = CITATION_THRESHOLD) -> GuardResult:
-    """Every quote exists in the source it cites, small differences tolerated."""
+    """Every quote exists in the source it cites, small differences tolerated. The example of a
+    « cours en clair » is checked like a question."""
     reasons = []
-    flat_sources = {key: _flat(text) for key, text in sources.items()}
-    for item in sheet.items:
-        if item.quote is None:
-            reasons.append(f"{item.id} : pas de citation du cours.")
+    flat_sources = {key: flat(text) for key, text in sources.items()}
+    quoted: list[tuple[str, Quote | None]] = [(item.id, item.quote) for item in sheet.items]
+    if sheet.recap is not None:
+        quoted.append(("exemple", sheet.recap.example.quote))
+    for name, quote in quoted:
+        if quote is None:
+            reasons.append(f"{name} : pas de citation du cours.")
             continue
-        excerpt = _flat(item.quote.excerpt)
-        source = flat_sources.get(item.quote.source_id)
+        excerpt = flat(quote.excerpt)
+        source = flat_sources.get(quote.source_id)
         if source is None:
-            reasons.append(f"{item.id} : la citation renvoie à une source inconnue.")
+            reasons.append(f"{name} : la citation renvoie à une source inconnue.")
         elif len(excerpt) < MIN_QUOTE_CHARS:
-            reasons.append(f"{item.id} : citation trop courte, recopie une phrase entière du cours.")
+            reasons.append(f"{name} : citation trop courte, recopie une phrase entière du cours.")
         elif fuzz.partial_ratio(excerpt, source) < threshold:
-            reasons.append(f"{item.id} : la citation « {item.quote.excerpt[:80]} » n'est pas dans le cours, "
+            reasons.append(f"{name} : la citation « {quote.excerpt[:80]} » n'est pas dans le cours, "
                            "recopie-la mot pour mot.")
     return GuardResult("citation", not reasons, reasons)
 
@@ -73,7 +80,7 @@ def _answers(item: Item) -> list[str]:
 
 
 def _found(answer: str, quote: str) -> bool:
-    flat_answer, flat_quote = _flat(answer), _flat(quote)
+    flat_answer, flat_quote = flat(answer), flat(quote)
     if not flat_answer:
         return False
     if len(flat_answer) <= 4 or flat_answer.replace(" ", "").isdigit():  # short words and dates: exact
@@ -176,11 +183,53 @@ def duration(sheet: Sheet, target_minutes: int) -> GuardResult:
     return GuardResult("duration", True)
 
 
-def run_all(sheet: Sheet, sources: dict[str, str], target_minutes: int, computational: bool) -> list[GuardResult]:
-    return [
+# ---------------------------------------------------------------------- formats (T20)
+
+
+def structure(sheet: Sheet) -> GuardResult:
+    """What each format promises: five short questions for a quick quiz; a summary, an example,
+    three points and two questions for a « cours en clair »."""
+    reasons = []
+    if sheet.type == "quick_quiz":
+        if len(sheet.items) != QUIZ_ITEMS:
+            reasons.append(f"interro flash : {QUIZ_ITEMS} questions attendues, pas {len(sheet.items)}.")
+        long = [item.id for item in sheet.items if item.type not in QUIZ_TYPES]
+        if long:
+            reasons.append(f"{', '.join(long)} : interro flash, seulement des questions à réponse courte.")
+    if sheet.type == "lesson_recap":
+        recap = sheet.recap
+        if recap is None:
+            reasons.append("cours en clair : le résumé, l'exemple et les points à retenir manquent.")
+        else:
+            if len(recap.key_points) != RECAP_KEY_POINTS:
+                reasons.append(f"cours en clair : {RECAP_KEY_POINTS} points à retenir, pas {len(recap.key_points)}.")
+            if len(recap.summary) > RECAP_SUMMARY_CHARS:
+                reasons.append(f"cours en clair : résumé trop long ({len(recap.summary)} caractères, "
+                               f"{RECAP_SUMMARY_CHARS} au plus).")
+        if len(sheet.items) != RECAP_ITEMS:
+            reasons.append(f"cours en clair : {RECAP_ITEMS} questions de vérification, pas {len(sheet.items)}.")
+    return GuardResult("structure", not reasons, reasons)
+
+
+def focus(sheet: Sheet, concepts: list[str]) -> GuardResult:
+    """Each missed concept comes back in at least one question (T20)."""
+    covered_texts = [flat(f"{item.concept} {item.prompt}") for item in sheet.items]
+    missing = [concept for concept in concepts
+               if not any(fuzz.partial_ratio(flat(concept), text) >= FOCUS_THRESHOLD for text in covered_texts)]
+    reasons = [f"la notion ratée « {concept} » n'a pas de question : ajoute-en une." for concept in missing]
+    return GuardResult("focus", not reasons, reasons)
+
+
+def run_all(sheet: Sheet, sources: dict[str, str], target_minutes: int, computational: bool,
+            concepts: list[str] | None = None) -> list[GuardResult]:
+    results = [
         citations(sheet, sources),
         answers_in_quotes(sheet, computational),
         maths(sheet, computational),
         correction(sheet),
         duration(sheet, target_minutes),
+        structure(sheet),
     ]
+    if concepts:
+        results.append(focus(sheet, concepts))
+    return results

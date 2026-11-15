@@ -100,6 +100,20 @@ class Item(Strict):
         return self
 
 
+class Example(Strict):
+    statement: str
+    solution: str
+    quote: Quote | None = None  # the lesson passage it comes from
+
+
+class Recap(Strict):
+    """The « cours en clair » of a lesson_recap sheet (ARCHITECTURE.md §9.4), read before its questions."""
+
+    summary: str  # in a 5e student's words
+    example: Example
+    key_points: list[str] = Field(min_length=1, max_length=5)
+
+
 class Sheet(Strict):
     id: str
     student: str
@@ -108,10 +122,13 @@ class Sheet(Strict):
     type: SheetType
     rule: RuleRef | None = None
     sources: list[str] = []
+    # How each source is shown to the family: {"lesson:2026-11-04:HI-GE": "ton cours du mardi 4/11"}.
+    source_labels: dict[str, str] = {}
     visible_from: date
     due_by: date | None = None
     estimated_minutes: int = Field(ge=1, le=120)
     trace_id: str | None = None
+    recap: Recap | None = None
     items: list[Item] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -119,4 +136,6 @@ class Sheet(Strict):
         ids = [item.id for item in self.items]
         if len(ids) != len(set(ids)):
             raise ValueError("item ids must be unique within a sheet")
+        if self.type == "lesson_recap" and self.recap is None:
+            raise ValueError("a lesson_recap sheet needs its recap")
         return self

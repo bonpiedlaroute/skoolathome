@@ -12,15 +12,21 @@ from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from rapidfuzz import fuzz
 
-from skoolathome.schema.sheet import Check, Item, ParentGuide, Quote, Sheet
+from skoolathome.schema.sheet import Check, Example, Item, ParentGuide, Quote, Recap, RuleRef, Sheet
 
 DraftItemType = Literal["choice", "number", "fraction", "short_answer", "fill_blank", "open"]
+QuizItemType = Literal["choice", "number", "short_answer", "fill_blank"]  # an oral quiz: short answers
 
 # Minutes a 5e student needs, per question type: the code estimates the duration, not the model.
 MINUTES = {"choice": 0.75, "number": 1.5, "fraction": 1.5, "short_answer": 1.0, "fill_blank": 1.5,
            "matching": 2.0, "open": 3.0}
 AVERAGE_MINUTES = 1.25  # to choose how many questions to ask for
+RECAP_READING_MINUTES = 3  # reading the « cours en clair » before its questions
+QUIZ_ITEMS = 5
+RECAP_ITEMS = 2
+RECAP_KEY_POINTS = 3
 
 
 class Draft(BaseModel):
@@ -54,17 +60,67 @@ class DraftItem(Draft):
     difficulty: int = Field(ge=1, le=3)
 
 
+class QuizItem(DraftItem):
+    type: QuizItemType
+
+
 class DraftSheet(Draft):
     title: str
     items: list[DraftItem] = Field(min_length=1, max_length=20)
+
+
+class DraftQuiz(Draft):
+    """quick_quiz: five questions as in an oral quiz, short answers (T20)."""
+
+    title: str
+    items: list[QuizItem] = Field(min_length=QUIZ_ITEMS, max_length=QUIZ_ITEMS)
+
+
+class DraftExample(Draft):
+    statement: str
+    quote: str = Field(description="the lesson passage the example comes from, word for word")
+    solution: str
+
+
+class DraftRecap(Draft):
+    """lesson_recap: the lesson in a 5e student's words, a solved example, three points to
+    remember and two check questions (ARCHITECTURE.md §9.4)."""
+
+    title: str
+    summary: str
+    example: DraftExample
+    key_points: list[str] = Field(min_length=RECAP_KEY_POINTS, max_length=RECAP_KEY_POINTS)
+    items: list[DraftItem] = Field(min_length=RECAP_ITEMS, max_length=RECAP_ITEMS)
+
+
+class AssessmentVerdict(Draft):
+    """The model's reading of an ambiguous homework (T19): is a test announced?"""
+
+    is_assessment: bool
+    date: str | None = Field(default=None, description="the test date, YYYY-MM-DD, if written")
+    scope: str = Field(default="", description="what the test is on, in a few words")
+    confidence: float = Field(ge=0, le=1)
 
 
 def item_count(target_minutes: int) -> int:
     return max(3, min(12, round(target_minutes / AVERAGE_MINUTES)))
 
 
-def estimated_minutes(items: list[Item]) -> int:
-    return max(1, math.ceil(sum(MINUTES[item.type] for item in items)))
+def estimated_minutes(items: list[Item], recap: Recap | None = None) -> int:
+    reading = RECAP_READING_MINUTES if recap is not None else 0
+    return max(1, math.ceil(reading + sum(MINUTES[item.type] for item in items)))
+
+
+def locate(excerpt: str, sources: dict[str, str]) -> str:
+    """The source the excerpt was copied from: the code finds it, the model does not have to say it.
+    With no good match, the first source: the citation guard then says the excerpt is not there."""
+    from skoolathome.agent.guards import flat  # the same normalization as the guard
+
+    if not sources:
+        return ""
+    target = flat(excerpt)
+    scores = {key: fuzz.partial_ratio(target, flat(text)) for key, text in sources.items()}
+    return max(scores, key=lambda key: scores[key])
 
 
 def _check(item: DraftItem) -> Check:
@@ -75,7 +131,11 @@ def _check(item: DraftItem) -> Check:
     return Check(mode="variants" if item.variants and item.type == "short_answer" else "exact")
 
 
-def to_item(index: int, item: DraftItem, source_id: str) -> Item:
+def _quote(excerpt: str, sources: dict[str, str]) -> Quote | None:
+    return Quote(source_id=locate(excerpt, sources), excerpt=excerpt) if excerpt.strip() else None
+
+
+def to_item(index: int, item: DraftItem, sources: dict[str, str]) -> Item:
     """Raises pydantic.ValidationError when the item is inconsistent (format guard)."""
     answer = item.answer
     if item.type == "fill_blank" and isinstance(answer, str):
@@ -86,7 +146,7 @@ def to_item(index: int, item: DraftItem, source_id: str) -> Item:
         id=f"q{index}",
         type=item.type,
         prompt=item.prompt,
-        quote=Quote(source_id=source_id, excerpt=item.quote) if item.quote.strip() else None,
+        quote=_quote(item.quote, sources),
         answer=answer,
         variants=item.variants if item.type == "short_answer" else [],
         check=_check(item),
@@ -102,27 +162,41 @@ def to_item(index: int, item: DraftItem, source_id: str) -> Item:
 
 
 def to_sheet(
-    draft: DraftSheet,
+    draft: DraftSheet | DraftQuiz | DraftRecap,
     *,
-    sheet_id: str,
-    subject: str,
-    source_id: str,
-    kind: str,
-    visible_from: date,
+    task: dict,
+    sources: dict[str, str],
+    labels: dict[str, str],
     trace_id: str,
     student: str = "eleve",
 ) -> Sheet:
     """Raises pydantic.ValidationError when the draft cannot make a valid Sheet (format guard)."""
-    items = [to_item(index, item, source_id) for index, item in enumerate(draft.items, start=1)]
+    items = [to_item(index, item, sources) for index, item in enumerate(draft.items, start=1)]
+    recap = None
+    if isinstance(draft, DraftRecap):
+        recap = Recap(
+            summary=draft.summary,
+            example=Example(statement=draft.example.statement, solution=draft.example.solution,
+                            quote=_quote(draft.example.quote, sources)),
+            key_points=draft.key_points,
+        )
+    cited = {item.quote.source_id for item in items if item.quote}
+    if recap and recap.example.quote:
+        cited.add(recap.example.quote.source_id)
+    used = [key for key in sources if key in cited] or list(sources)
     return Sheet(
-        id=sheet_id,
+        id=task["id"],
         student=student,  # never a name online
-        subject=subject,
+        subject=task["subject"],
         title=draft.title,
-        type=kind,
-        sources=[source_id],
-        visible_from=visible_from,
-        estimated_minutes=estimated_minutes(items),
+        type=task["kind"],
+        rule=RuleRef(id=task["rule"], version=task["rule_version"]) if task.get("rule_version") else None,
+        sources=used,
+        source_labels={key: labels[key] for key in used if key in labels},
+        visible_from=date.fromisoformat(task["visible_from"]),
+        due_by=date.fromisoformat(task["due_by"]) if task.get("due_by") else None,
+        estimated_minutes=estimated_minutes(items, recap),
         trace_id=trace_id,
+        recap=recap,
         items=items,
     )
