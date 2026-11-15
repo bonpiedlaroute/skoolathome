@@ -16,10 +16,10 @@ from skoolathome.api import settings
 
 COOKIE_NAME = "skoolathome_session"
 COOKIE_MAX_AGE = int(timedelta(days=400).total_seconds())  # the longest lifetime browsers accept
-PAIRING_TOKEN_LIFETIME = timedelta(minutes=10)
+PAIRING_TOKEN_LIFETIME = timedelta(hours=1)  # time to send the link by message and open it
 MIN_BOOTSTRAP_CODE_LENGTH = 16
 # A pairing code is typed by hand on a computer: no 0/O nor 1/I. 8 characters out of 32 are 40 bits,
-# for ten minutes and a single use: far out of reach of guessing.
+# for one hour and a single use: far out of reach of guessing.
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
 
@@ -60,9 +60,10 @@ def create_device(conn: psycopg.Connection, role: str, label: str) -> tuple[Devi
 
 
 def pair_with_bootstrap_code(conn: psycopg.Connection, code: str, label: str) -> tuple[Device, str]:
-    """The very first parent device. Works once: refused as soon as a parent device exists."""
-    expected = settings.bootstrap_code()
-    if len(expected) < MIN_BOOTSTRAP_CODE_LENGTH or not hmac.compare_digest(code.encode(), expected.encode()):
+    """The very first parent device. Works once: refused as soon as a parent device exists. Typed
+    on a phone: case, spaces and dashes do not count."""
+    expected = normalize_code(settings.bootstrap_code())
+    if len(expected) < MIN_BOOTSTRAP_CODE_LENGTH or not hmac.compare_digest(normalize_code(code).encode(), expected.encode()):
         raise HTTPException(403, "invalid code")
     with conn.transaction():
         conn.execute("LOCK TABLE devices IN EXCLUSIVE MODE")
@@ -79,15 +80,22 @@ def normalize_code(text: str) -> str:
     return "".join(c for c in text.upper() if c.isalnum())
 
 
-def create_pairing_token(conn: psycopg.Connection, creator: Device, role: str, label: str) -> str:
-    """A short code, shown as K7PM-4QXN: typed on a computer, or read from the QR code's link."""
-    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+def new_code(length: int = CODE_LENGTH) -> str:
+    """K7PM-4QXN: groups of four, easy to read out and to type."""
+    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(length))
+    return "-".join(raw[i:i + 4] for i in range(0, length, 4))
+
+
+def create_pairing_token(conn: psycopg.Connection, creator: Device | None, role: str, label: str) -> str:
+    """A short code, shown as K7PM-4QXN: typed on a computer, or read from the QR code's link.
+    `creator` is None when the laptop asks for it (`skoolathome pair`, signed NIP-98)."""
+    code = new_code()
     conn.execute(
         "INSERT INTO pairing_tokens (token_hash, role, label, created_by, expires_at) "
         "VALUES (%s, %s, %s, %s, now() + %s)",
-        (sha256(raw), role, label, creator.id, PAIRING_TOKEN_LIFETIME),
+        (sha256(normalize_code(code)), role, label, creator.id if creator else None, PAIRING_TOKEN_LIFETIME),
     )
-    return f"{raw[:4]}-{raw[4:]}"
+    return code
 
 
 def pair_with_token(conn: psycopg.Connection, token: str) -> tuple[Device, str]:

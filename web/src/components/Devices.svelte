@@ -12,14 +12,24 @@
   let label = $state("iPad");
   let qr = $state<{ code: string; url: string; qr_svg: string; expires_in_minutes: number } | null>(null);
   let copied = $state(false);
+  const canShare = typeof navigator.share === "function";
 
-  async function copyLink() {
+  /** On a phone, the share sheet (Messages, WhatsApp…); elsewhere, the clipboard. */
+  async function sendLink() {
     if (!qr) return;
     try {
-      await navigator.clipboard.writeText(qr.url);
-      copied = true;
+      if (canShare) {
+        await navigator.share({
+          title: "Révisions",
+          text: `Pour associer ton appareil aux révisions, touche ce lien (valable ${qr.expires_in_minutes} min) :`,
+          url: qr.url,
+        });
+      } else {
+        await navigator.clipboard.writeText(qr.url);
+        copied = true;
+      }
     } catch {
-      copied = false; // the link stays visible: select it by hand
+      // share sheet closed, or clipboard refused: the code stays on screen
     }
   }
   let error = $state("");
@@ -90,7 +100,11 @@
     <p class="muted">Valable {qr.expires_in_minutes} minutes, une seule fois.</p>
     <p class="muted">Sur une tablette ou un téléphone, tu peux aussi scanner ce QR code avec l'appareil photo :</p>
     <div class="qr">{@html qr.qr_svg}</div>
-    <p><button type="button" onclick={copyLink}>{copied ? "Lien copié" : "Copier le lien, pour l'envoyer par message"}</button></p>
+    <p>
+      <button type="button" class="primary" onclick={sendLink}>
+        {canShare ? "Envoyer le lien par message" : copied ? "Lien copié" : "Copier le lien, pour l'envoyer par message"}
+      </button>
+    </p>
   {/if}
 </form>
 

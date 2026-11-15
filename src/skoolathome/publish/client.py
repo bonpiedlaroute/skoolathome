@@ -74,6 +74,10 @@ class ApiClient:
     def feedback(self, since: int = 0) -> dict:
         return self._call("GET", "/api/feedback", params={"since": since})
 
+    def pairing_code(self, role: str, label: str) -> dict:
+        """A code to pair a new device: {code, url, expires_in_minutes, qr_svg}."""
+        return self._call("POST", "/api/agent/pairing-tokens", {"role": role, "label": label})
+
     def report(self, report: dict) -> dict:
         """The end-of-evening report: stored online and pushed to the parent devices."""
         return self._call("POST", "/api/evening-reports", report)

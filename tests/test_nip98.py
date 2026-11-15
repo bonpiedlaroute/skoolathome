@@ -256,3 +256,12 @@ def test_an_empty_batch_is_refused(agent):
     with pytest.raises(ApiError) as refused:
         agent.publish([])
     assert refused.value.status == 422
+
+
+def test_the_laptop_can_make_a_pairing_code(agent, api_db):
+    made = agent.pairing_code("parent", "iPhone")
+    assert made["expires_in_minutes"] == 60 and made["url"] == f"{BASE}/#/pair/{made['code']}"
+    phone = TestClient(app, base_url=BASE)
+    assert phone.post("/api/pair", json={"token": made["code"]}).json()["role"] == "parent"
+    unsigned = TestClient(app, base_url=BASE).post("/api/agent/pairing-tokens", json={"role": "parent", "label": "x"})
+    assert unsigned.status_code in (401, 503)

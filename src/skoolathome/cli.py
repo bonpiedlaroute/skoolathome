@@ -817,6 +817,34 @@ def _signed_api(action):
         sys.exit(f"L'API a refusé : {error}")
 
 
+def cmd_pair(args: argparse.Namespace) -> int:
+    """A code to pair a phone, a tablet or a computer: scan the QR code, open the link, or type the code."""
+    import segno
+
+    label = args.label or ("Parent" if args.role == "parent" else "Enfant")
+    data = _signed_api(lambda client: client.pairing_code(args.role, label))
+    site = data["url"].split("/#/")[0]
+    print()
+    segno.make(data["url"], error="m").terminal(compact=True)
+    print(f"\n  Code : {data['code']}    ({'parent' if args.role == 'parent' else 'enfant'}, "
+          f"valable {data['expires_in_minutes']} min, une seule fois)\n")
+    print("  Téléphone ou tablette : scanne ce QR code avec l'appareil photo, puis touche le lien.")
+    print(f"  Ordinateur : ouvre {site} et tape le code.")
+    print(f"  Ou envoie ce lien par message : {data['url']}")
+    return 0
+
+
+def cmd_api_bootstrap_code(args: argparse.Namespace) -> int:
+    """A bootstrap code easy to type on a phone, for SKOOLATHOME_BOOTSTRAP_CODE."""
+    from skoolathome.api.auth import new_code
+
+    print(new_code(16))
+    print("\nÀ mettre dans Vercel (SKOOLATHOME_BOOTSTRAP_CODE), puis redéploie. Il n'associe que le tout premier "
+          "appareil parent. En le tapant, majuscules, espaces et tirets ne comptent pas.\n"
+          "Plus simple encore, sans lui : skoolathome pair")
+    return 0
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     """Publish hand-written or generated sheets in one signed batch."""
     from skoolathome.schema.sheet import Sheet
@@ -913,6 +941,7 @@ def main() -> None:
     seed.add_argument("--visible-from", help="override the display date (YYYY-MM-DD)")
     seed.set_defaults(run=cmd_api_seed)
     api.add_parser("vapid-keys", help="print a new key pair for Web Push").set_defaults(run=cmd_api_vapid_keys)
+    api.add_parser("bootstrap-code", help="print a new bootstrap code, easy to type").set_defaults(run=cmd_api_bootstrap_code)
     set_url = api.add_parser("set-url", help="save the API address used by publish and feedback")
     set_url.add_argument("url")
     set_url.set_defaults(run=cmd_api_set_url)
@@ -958,6 +987,11 @@ def main() -> None:
     feedback.add_argument("--since", type=int, default=0, help="cursor printed by the previous call")
     feedback.add_argument("--json", action="store_true")
     feedback.set_defaults(run=cmd_feedback)
+
+    pair = commands.add_parser("pair", help="a code and a QR code to pair a phone, a tablet or a computer")
+    pair.add_argument("--role", choices=["parent", "child"], default="parent")
+    pair.add_argument("--label", help="the device's name, e.g. « iPhone de Noël » (default: Parent / Enfant)")
+    pair.set_defaults(run=cmd_pair)
 
     plan_ = commands.add_parser("plan", help="the evening plan, without any model: tasks and skipped tasks")
     plan_.add_argument("--today")

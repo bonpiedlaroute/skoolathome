@@ -92,7 +92,7 @@ def test_session_cookie_is_not_readable_by_scripts(api_db):
 
 def test_pairing_token_works_once(parent):
     created = parent.post("/api/pairing-tokens", json={"role": "child", "label": "iPad"}).json()
-    assert created["qr_svg"].startswith("<svg") and created["expires_in_minutes"] == 10
+    assert created["qr_svg"].startswith("<svg") and created["expires_in_minutes"] == 60
     token = created["url"].split("#/pair/")[1]
     child = browser()
     assert child.post("/api/pair", json={"token": token}).json() == {
@@ -198,3 +198,8 @@ def test_inconsistent_item_is_refused(change):
     data["items"][0].update(change)
     with pytest.raises(ValueError):
         Sheet.model_validate(data)
+
+
+def test_the_bootstrap_code_is_typed_as_one_likes(api_db, monkeypatch):
+    monkeypatch.setenv("SKOOLATHOME_BOOTSTRAP_CODE", "QR7N-ZW8C-Q97W-RP3L")
+    assert browser().post("/api/pair", json={"code": "qr7n zw8c q97w rp3l"}).json()["role"] == "parent"

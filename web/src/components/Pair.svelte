@@ -19,7 +19,7 @@
     try {
       onpaired(await api.pairWithToken(code.trim()));
     } catch {
-      codeError = "Code refusé : il a peut-être expiré (10 minutes) ou déjà servi. Crée-en un nouveau.";
+      codeError = "Code refusé : il a peut-être expiré (une heure) ou déjà servi. Crée-en un nouveau.";
     } finally {
       busy = false;
     }
@@ -50,8 +50,9 @@
   <ol>
     <li>Sur un appareil déjà associé comme parent (téléphone, tablette ou ordinateur), ouvre <strong>Appareils</strong>.</li>
     <li>Dans « Associer un nouvel appareil », choisis <strong>Parent</strong> ou <strong>Enfant</strong>, puis <strong>Créer le code</strong>.</li>
-    <li>Tape ici le code affiché. Il est valable 10 minutes.</li>
+    <li>Tape ici le code affiché. Il est valable une heure.</li>
   </ol>
+  <p class="muted">Si on t'a envoyé un lien par message, touche-le simplement : il associe cet appareil tout seul.</p>
   <input type="text" bind:value={code} placeholder="par exemple K7PM-4QXN" autocomplete="off" autocapitalize="characters"
     spellcheck="false" maxlength="20" aria-label="Code d'association" class="code" />
   {#if codeError}<p class="error">{codeError}</p>{/if}
@@ -66,6 +67,10 @@
       Le premier appareil s'associe avec le <strong>code d'amorçage</strong>, choisi par la personne qui a installé le site
       (la variable <code>SKOOLATHOME_BOOTSTRAP_CODE</code> des réglages Vercel). Il ne sert qu'une fois : ensuite, chaque
       appareil s'associe avec un code créé depuis « Appareils ».
+    </p>
+    <p class="muted">
+      Plus simple : sur l'ordinateur où tourne l'agent, la commande <code>skoolathome pair</code> affiche un QR code à
+      scanner avec ce téléphone.
     </p>
     <input type="password" bind:value={bootstrap} autocomplete="off" aria-label="Code d'amorçage" />
     {#if bootstrapError}<p class="error">{bootstrapError}</p>{/if}

@@ -146,13 +146,34 @@ def create_pairing_token(
     device: Device = Depends(parent_device),
     conn: psycopg.Connection = Depends(get_conn),
 ) -> dict:
-    token = auth.create_pairing_token(conn, device, body.role, body.label)
-    # The token travels in the fragment (#…): browsers never send it to a server or write it in logs.
-    origin = str(request.base_url).rstrip("/")
-    url = f"{origin}/#/pair/{token}"
+    return _pairing(request, auth.create_pairing_token(conn, device, body.role, body.label))
+
+
+def _pairing(request: Request, code: str) -> dict:
+    # The code travels in the fragment (#…): browsers never send it to a server or write it in logs.
+    url = f"{_origin(request)}/#/pair/{code}"
     qr = segno.make(url, error="m").svg_inline(scale=6, border=2, dark="#111", light="#fff")
     minutes = int(auth.PAIRING_TOKEN_LIFETIME.total_seconds() // 60)
-    return {"code": token, "url": url, "qr_svg": qr, "expires_in_minutes": minutes}
+    return {"code": code, "url": url, "qr_svg": qr, "expires_in_minutes": minutes}
+
+
+def _origin(request: Request) -> str:
+    """The address the family uses, also behind Vercel's proxy."""
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    return f"{proto}://{host}"
+
+
+@app.post("/api/agent/pairing-tokens")
+def agent_pairing_token(
+    body: PairingTokenRequest,
+    request: Request,
+    agent: nip98.Agent = Depends(nip98.require_agent),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """`skoolathome pair` on the laptop: a code for a new device, without the bootstrap code nor
+    another device. Signed by the bunker, like every call of the laptop."""
+    return _pairing(request, auth.create_pairing_token(conn, None, body.role, body.label))
 
 
 @app.get("/api/devices")
