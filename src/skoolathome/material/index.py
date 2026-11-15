@@ -79,15 +79,18 @@ def _upsert_document(conn: psycopg.Connection, ref: DocumentRef, *, status: str,
     ).fetchone()[0]
 
 
-def store(conn: psycopg.Connection, document: CourseDocument, embedder: Embedder) -> int:
+def store(conn: psycopg.Connection, document: CourseDocument, embedder: Embedder | None) -> int:
     """Replace the pages and pieces of a document. The vectors are computed before anything is
-    written: a failure leaves the previous index as it was."""
+    written: a failure leaves the previous index as it was. Without an embedder, the pages only:
+    a teacher's attachment is read with its lesson, no search needed (T25)."""
     pieces = [(page.number, position, text)
               for page in document.pages for position, text in enumerate(chunks(page.text))]
+    if embedder is None:
+        pieces = []
     vectors = embedder.embed([text for _, _, text in pieces]) if pieces else []
     with conn.transaction():
         doc_id = _upsert_document(conn, document.ref, status="indexed", page_count=len(document.pages),
-                                  ocr=any(p.ocr for p in document.pages), model=embedder.model)
+                                  ocr=any(p.ocr for p in document.pages), model=embedder.model if embedder else "")
         conn.execute("DELETE FROM material.pages WHERE document_id = %s", (doc_id,))
         for page in document.pages:
             conn.execute("INSERT INTO material.pages (document_id, number, text, ocr) VALUES (%s, %s, %s, %s)",
@@ -101,14 +104,17 @@ def store(conn: psycopg.Connection, document: CourseDocument, embedder: Embedder
     return doc_id
 
 
-def sync(conn: psycopg.Connection, source: CourseMaterialSource, embedder: Embedder) -> IndexReport:
-    """Index what is new or changed in the source, forget what was removed from it."""
+def sync(conn: psycopg.Connection, source: CourseMaterialSource, embedder: Embedder | None) -> IndexReport:
+    """Index what is new or changed in the source, forget what was removed from it. A document
+    indexed without vectors gets them once the embedding model is there."""
     report = IndexReport()
     known = _known(conn, source.name)
     refs = source.list_documents()
     for ref in refs:
         previous = known.get(ref.source_ref)
-        if previous and previous[0] == ref.sha256 and previous[1] != "failed" and previous[2] in ("", embedder.model):
+        same_vectors = embedder is None or previous is not None and (
+            previous[2] == embedder.model or previous[1] == "unsupported")
+        if previous and previous[0] == ref.sha256 and previous[1] != "failed" and same_vectors:
             report.unchanged += 1
             continue
         supported = getattr(source, "supported", lambda _ref: True)(ref)

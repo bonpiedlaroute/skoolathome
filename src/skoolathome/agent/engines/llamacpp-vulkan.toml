@@ -1,0 +1,38 @@
+# llama.cpp with Vulkan: the layers on the Intel iGPU (-ngl 99) (T30).
+# The same weights and quantization as models.toml: the GGUF files Ollama already downloaded.
+# Start the two servers:  deploy/engines/llamacpp.sh start vulkan
+# Then:  SKOOLATHOME_MODELS=src/skoolathome/agent/engines/llamacpp-vulkan.toml uv run skoolathome llm bench --save
+#        SKOOLATHOME_MODELS=src/skoolathome/agent/engines/llamacpp-vulkan.toml make eval-production
+
+[engine]
+name = "llamacpp-vulkan"
+base_url = "http://127.0.0.1:8081/v1"
+native_url = ""
+timeout_seconds = 1500
+
+# One model per llama-server: the name is only a label, kept the same as with Ollama to compare.
+[generator]
+model = "ministral-3:8b-instruct-2512-q4_K_M"
+family = "mistral"
+quantization = "Q4_K_M"
+temperature = 0.3
+max_tokens = 4096
+base_url = "http://127.0.0.1:8081/v1"
+
+# Its reflection mode is off on the server side (--reasoning-budget 0).
+[judge]
+model = "qwen3.5:4b-q4_K_M"
+family = "qwen"
+quantization = "Q4_K_M"
+temperature = 0.0
+max_tokens = 1024
+base_url = "http://127.0.0.1:8082/v1"
+
+# The documents' vectors stay with Ollama: they are not part of the comparison.
+[embedder]
+model = "bge-m3"
+family = "bge"
+quantization = "F16"
+dimensions = 1024
+base_url = "http://127.0.0.1:11434/v1"
+engine = "ollama"

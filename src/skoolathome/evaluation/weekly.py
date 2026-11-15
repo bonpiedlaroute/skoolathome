@@ -115,8 +115,17 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
         "SELECT score, total FROM feedback.finishes WHERE finished_at::date BETWEEN %s AND %s AND total > 0",
         (start, end)).fetchall()
     tests = cases.observed_recall(conn, student_id, start, end)
+    asked = conn.execute(  # « Je n'ai pas compris » (T29): what the sheets explain badly
+        "SELECT e.helped, s.subject_code, item->>'concept' FROM agent.explanations e "
+        "LEFT JOIN agent.sheets s ON s.id = e.sheet_id "
+        "LEFT JOIN LATERAL jsonb_array_elements(s.body->'items') AS item ON item->>'id' = e.item_id "
+        "WHERE coalesce(e.asked_at, e.answered_at)::date BETWEEN %s AND %s", (start, end),
+    ).fetchall()
     agreed = agreement(conn)
     chosen = to_annotate(conn, student_id, start, end, week)
+    from skoolathome.agent.proposals import acceptance  # T28
+
+    proposed = acceptance(conn)
 
     by_reason = Counter(reason for reason, _ in reports)
     by_rule = Counter(rule or "fiche écrite à la main" for _, rule in reports)
@@ -139,6 +148,16 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
                   alert=success is not None and len(solo) >= MIN_ANSWERS and not SUCCESS_RANGE[0] <= success <= SUCCESS_RANGE[1],
                   detail=(f"Fiches finies : {sum(s for s, _ in finishes)}/{sum(t for _, t in finishes)} en moyenne "
                           f"sur {len(finishes)} fiche(s). Visé : entre 60 et 85 %.") if finishes else "Visé : entre 60 et 85 %."),
+        Indicator(name="not_understood", label="« Je n'ai pas compris »",
+                  value=f"{len(asked)} demande{'s' if len(asked) > 1 else ''}" if asked else "aucune demande",
+                  alert=any(helped is False for helped, _, _ in asked),
+                  detail=_not_understood(asked)),
+        Indicator(name="proposals", label="Règles proposées par l'agent",
+                  value=(f"{proposed['accepted']} acceptée{'s' if proposed['accepted'] > 1 else ''} sur "
+                         f"{proposed['decided']} ({_percent(proposed['rate'])})") if proposed["decided"]
+                  else "aucune décision encore",
+                  detail=(f"Dont {proposed['edited']} modifiée(s). " if proposed["edited"] else "")
+                  + (f"{proposed['waiting']} en attente de ta réponse." if proposed["waiting"] else "")),
         Indicator(name="tests", label="Contrôles détectés avant le jour",
                   value=f"{tests['detected']} sur {tests['observed']}" if tests["observed"] else "aucun contrôle noté",
                   alert=bool(tests["missed"]),
@@ -166,8 +185,26 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
     metrics = {"made": made, "blocked": len(blocked), "regenerated": len(regenerated), "abstained": len(abstained),
                "guard_failures": dict(failures), "reports": dict(by_reason), "reports_by_rule": dict(by_rule),
                "solo_answers": len(solo), "success": success, "tests": tests, "agreement": agreed,
+               "proposals": proposed,
+               "not_understood": {"asked": len(asked), "helped": sum(1 for h, _, _ in asked if h),
+                                  "not_helped": sum(1 for h, _, _ in asked if h is False)},
                "alerts": [i.name for i in alerts]}
     return Review(payload, metrics)
+
+
+def _not_understood(asked: list[tuple]) -> str:
+    """By subject and by concept, and whether the explanations helped."""
+    if not asked:
+        return ""
+    subjects = Counter(label(code) for _, code, _ in asked if code)
+    concepts = Counter(concept for _, _, concept in asked if concept)
+    rated = [helped for helped, _, _ in asked if helped is not None]
+    parts = ["Matières : " + ", ".join(f"{s} {n}" for s, n in subjects.most_common(4))] if subjects else []
+    if concepts:
+        parts.append("Notions : " + ", ".join(f"{c} {n}" for c, n in concepts.most_common(4)))
+    if rated:
+        parts.append(f"Ça a aidé : {sum(rated)} sur {len(rated)}")
+    return ". ".join(parts) + "."
 
 
 # ------------------------------------------------------------------------------ storage

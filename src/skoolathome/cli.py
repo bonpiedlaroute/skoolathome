@@ -56,13 +56,29 @@ def cmd_collect(args: argparse.Namespace) -> int:
     finally:
         client.close()
     print(f"Collecte n° {result.run_id} : {result.status}")
+    files = result.counts.pop("attachments", None)
     for table, counts in result.counts.items():
         print(f"  {table} : " + ", ".join(f"{n} {what}" for what, n in sorted(counts.items())) if counts else f"  {table} : rien")
+    if files:
+        _print_attachments(files)
     for error in result.errors:
         print(f"  erreur {error['kind']} {error['ref']} : {error['error']}")
     if result.status == "two_factor_required":
         print("École Directe demande la double authentification : lance skoolathome-ed-probe --interactive, une seule fois.")
     return 0 if result.status in ("ok", "partial") else 1
+
+
+ATTACHMENT_STATES = {"downloaded": "téléchargées", "pending": "à télécharger", "unsupported": "format non traité",
+                     "too_large": "trop grosses", "failed": "en échec"}
+
+
+def _print_attachments(files: dict) -> None:
+    new, formats = files.get("new") or {}, files.get("unsupported_formats") or {}
+    states = [f"{files[k]} {name}" for k, name in ATTACHMENT_STATES.items() if files.get(k)]
+    print("  pièces jointes : " + (", ".join(states) or "aucune")
+          + (f" (dont {new['downloaded']} ce soir)" if new.get("downloaded") else ""))
+    if formats:
+        print("    non traitées : " + ", ".join(f"{n} {suffix}" for suffix, n in sorted(formats.items())))
 
 
 def _notify(title: str, body: str) -> None:
@@ -95,7 +111,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
 def cmd_evening(args: argparse.Namespace) -> int:
     """What the timer runs (T17): the whole evening graph. Collection (one login, never a retry),
     feedback, plan, sheets, judge, signed publication, then the report to the parent."""
-    from skoolathome import summary
+    from skoolathome import locks, summary
     from skoolathome.agent import graph, llm
     from skoolathome.collectors.manual.source import ManualSource
     from skoolathome.store import db
@@ -121,9 +137,10 @@ def cmd_evening(args: argparse.Namespace) -> int:
     print(f"Soirée du {today.isoformat()}{what}" + ("" if publish else ", sans publication")
           + ". Compter 7 à 10 minutes par fiche.", flush=True)
     try:
-        evening = graph.run(today, student, services, db.database_url(), publish=publish,
-                            lesson_ids=args.lesson, forced_format=args.format,
-                            only_requests=args.only_requests, restart=args.restart)
+        with locks.model(wait=True):  # an explanation in progress (T29) finishes first
+            evening = graph.run(today, student, services, db.database_url(), publish=publish,
+                                lesson_ids=args.lesson, forced_format=args.format,
+                                only_requests=args.only_requests, restart=args.restart)
     except Exception as error:
         _send_failure(today, f"traitement interrompu ({type(error).__name__} : {str(error)[:150]})", publish)
         raise
@@ -149,6 +166,15 @@ def _preflight() -> str | None:
     with _connect() as conn:
         if conn.execute("SELECT to_regclass('agent.rules')").fetchone()[0] is None:
             return "Base locale pas à jour : lance skoolathome db migrate."
+    if conf.engine.name != "ollama":  # another engine of the comparison (T30): its servers must answer
+        for role in ("generator", "judge"):
+            url = conf.model(role).url(conf.engine)
+            try:
+                httpx.get(f"{url}/models", timeout=5).raise_for_status()
+            except httpx.HTTPError:
+                return (f"{conf.engine.name} ne répond pas sur {url} ({role}) : "
+                        "deploy/engines/llamacpp.sh start … ou openvino.sh start …")
+        return None
     try:
         httpx.get(f"{conf.engine.native_url}/api/version", timeout=3).raise_for_status()
     except httpx.HTTPError:
@@ -781,7 +807,8 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
             except LookupError as error:
                 print(error)
                 continue
-            baseline = None if args.label == "production" else runner.latest(conn, family, "production")
+            baseline = None if args.label == "production" else (
+                runner.latest(conn, family, "production", like=run.config) or runner.latest(conn, family, "production"))
             print("\n" + runner.report(run, baseline))
             if run.experiment:
                 print(f"Expérience Langfuse : « {run.experiment} » (Datasets → {cases.DATASETS[family]} → Runs)")
@@ -826,6 +853,93 @@ def cmd_eval_recall(args: argparse.Namespace) -> int:
     for miss in found["missed"]:
         print(f"  raté : {miss['subject']} le {miss['day']} ({miss['title']})")
     return 0 if not found["missed"] else 1
+
+
+def cmd_proposals_run(args: argparse.Namespace) -> int:
+    """The graph of proposals (T28), once a week: the teachers' habits seen in the data become rules
+    to authorize. Sent at once (one signature), or with the next evening's batch."""
+    from skoolathome import summary
+    from skoolathome.agent import instructions, proposals
+    from skoolathome.rules import store as rules_store
+    from skoolathome.store import db
+    from skoolathome.store import instructions as store
+
+    today = _today(args)
+    with _connect() as conn:
+        student = summary.latest_student(conn)
+        if student is None:
+            sys.exit("Aucune collecte en base : lance d'abord skoolathome collect.")
+        if args.dry_run:
+            habits = proposals.detect(conn, student, today)
+            for habit in habits:
+                print(f"{habit.key} :")
+                for line in proposals.facts(habit):
+                    print(f"  - {line}")
+            print(f"{len(habits)} habitude(s) repérée(s) ; déjà proposées ou couvertes par une règle : non proposées.")
+            return 0
+        rules_store.ensure_defaults(conn)
+        made = proposals.propose(conn, student, today)
+    if not made:
+        print("Rien de nouveau à proposer.")
+        return 0
+    instructions.process(db.database_url(), None, student, today, only_agent=True)  # straight to the pause
+    print(f"{len(made)} proposition(s) : {', '.join(made)}")
+    sessions = None if args.no_send else _api_sessions()
+    if sessions is None:
+        print("Elles partiront avec le lot de la prochaine soirée.")
+        return 0
+    with _connect() as conn:
+        updates, rules = store.to_report(conn), rules_store.published(conn)
+    with sessions() as client:
+        client.publish([], instructions=updates, rules=rules)
+    with _connect() as conn:
+        store.reported(conn, [u.id for u in updates])
+    print("Envoyées : elles attendent ton accord dans la vue parent (Consignes).")
+    return 0
+
+
+def cmd_proposals_list(args: argparse.Namespace) -> int:
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, status, created_at, decided_at, reason FROM agent.rule_proposals "
+                            "ORDER BY created_at DESC").fetchall()
+    states = {"proposed": "en attente", "accepted": "acceptée", "edited": "modifiée puis acceptée", "rejected": "refusée"}
+    if not rows:
+        print("Aucune proposition encore : skoolathome proposals run")
+    for key, status, created, decided, reason in rows:
+        print(f"{created:%d/%m}  {key:<24} {states[status]}" + (f" le {decided:%d/%m}" if decided else "")
+              + (f" : {reason[:80]}" if reason else ""))
+    return 0
+
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    """« Je n'ai pas compris » (T29): what the tablet asked, explained now. Run every few minutes by
+    a timer while the laptop is on: one signature when nothing waits, two when something does."""
+    from skoolathome import locks
+    from skoolathome.agent import explain, llm
+
+    hour = datetime.now().hour
+    if not args.now and not EXPLAIN_HOURS[0] <= hour < EXPLAIN_HOURS[1]:
+        return 0  # the night: nobody is waiting
+    with locks.model(wait=False) as free:
+        if not free:
+            print("Le traitement du soir utilise le modèle : les explications attendront le prochain passage.")
+            return 0
+        problem = _preflight()
+        if problem:
+            print(problem)
+            return 1
+        sessions = _api_sessions()
+        if sessions is None:
+            return 1
+        with sessions() as client:
+            done = explain.process(_connect, client, llm.Models(),
+                                   progress=lambda m: print(f"{datetime.now():%H:%M}  {m}", flush=True))
+    if args.verbose or done:
+        print(f"{len(done)} explication(s) traitée(s).")
+    return 0
+
+
+EXPLAIN_HOURS = (7, 22)  # when the timer asks the queue; --now for any hour
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -949,22 +1063,35 @@ def cmd_material_eval(args: argparse.Namespace) -> int:
     """Recall@3 on the cases of evals/retrieval/cases.json: the right page among the first three (T18, T31)."""
     from skoolathome.material import search
 
+    from skoolathome.evaluation import cases as reference
+
     cases = json.loads(Path(args.cases).read_text()).get("cases", [])
+    with _connect() as conn:  # plus the lessons with a PDF attached by their teacher (T25)
+        cases += [{"lesson": c.input["lesson"], "expected": c.expected["documents"],
+                   "note": f"pièce jointe, séance {c.input['lesson']}"} for c in reference.load(conn, "retrieval")]
     if not cases:
         sys.exit(f"Aucun cas dans {args.cases} : ajoute-en (voir tmp/T18-depot-manuel-index.md).")
     embedder = _embedder()
     if embedder is None:
         return 1
     found = 0
+
+    def matches(expected: dict, hit, documents: dict) -> bool:
+        """The right document, and the right page when one is expected (an attachment: any page)."""
+        source_ref, title = documents.get(hit.document_id, ("", ""))
+        if expected.get("page") is not None and expected["page"] != hit.page:
+            return False
+        if expected.get("source_ref"):
+            return source_ref == expected["source_ref"].lower()
+        return expected["document"].lower() in (source_ref, title)
+
     with _connect() as conn:
+        documents = {row[0]: (row[1].lower(), row[2].lower()) for row in conn.execute(
+            "SELECT id, source_ref, title FROM material.documents").fetchall()}
         for case in cases:
             query, subject = _material_query(conn, case.get("lesson"), case.get("query"))
             hits = search.similar_pages(conn, embedder.embed([query])[0], subject, limit=search.TOP_PAGES)
-            documents = {row[0]: (row[1].lower(), row[2].lower()) for row in conn.execute(
-                "SELECT id, source_ref, title FROM material.documents").fetchall()}
-            expected = [(e["document"].lower(), e["page"]) for e in case["expected"]]
-            ok = any(page == hit.page and name in documents.get(hit.document_id, ())
-                     for name, page in expected for hit in hits)
+            ok = any(matches(expected, hit, documents) for expected in case["expected"] for hit in hits)
             found += ok
             print(f"{'✓' if ok else '✗'} {case.get('note') or case.get('lesson') or case.get('query')[:40]} : "
                   + ", ".join(f"{h.label} ({h.score:.2f})" for h in hits))
@@ -1026,6 +1153,48 @@ def cmd_sheets_stats(args: argparse.Namespace) -> int:
         print("  motifs les plus fréquents :")
         for reason, count in reasons.most_common(8):
             print(f"    {count:>3} × {reason}")
+    return 0
+
+
+def cmd_ed_attachments(args: argparse.Namespace) -> int:
+    """The files attached to the lessons already collected, and where each one stands (T25)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT l.day, l.subject_code, d->>'source_id', d->>'name', (d->>'size')::bigint, a.status, a.error "
+            "FROM school.lessons l CROSS JOIN LATERAL jsonb_array_elements(l.documents) d "
+            "LEFT JOIN school.attachments a ON a.source = l.source AND a.student_id = l.student_id "
+            "AND a.lesson_source_id = l.source_id AND a.document_id = d->>'source_id' "
+            "ORDER BY l.day DESC, l.subject_code LIMIT %s", (args.limit,)).fetchall()
+    if not rows:
+        print("Aucune pièce jointe dans les séances collectées.")
+    for day, code, doc_id, name, size, status, error in rows:
+        state = ATTACHMENT_STATES.get(status, "pas encore vue par une collecte") + (f" ({error[:60]})" if error else "")
+        print(f"{day}  {code:<6} {doc_id:>8}  {(size or 0) / 1024:>6.0f} Ko  {name[:40]:<40} {state}")
+    return 0
+
+
+def cmd_ed_download(args: argparse.Namespace) -> int:
+    """One attached file, to check the download by hand before the collection does it (T25):
+    one login to École Directe, one download."""
+    from skoolathome import secrets
+    from skoolathome.collectors.ecoledirecte.client import Device, EcoleDirecteClient, EcoleDirecteError
+
+    conf = secrets.read("ecoledirecte")
+    if conf is None:
+        sys.exit("Identifiants École Directe absents : lance d'abord skoolathome-ed-probe --interactive.")
+    device = Device(conf["cn"], conf["cv"]) if conf.get("cn") and conf.get("cv") else None
+    target = Path("data/attachments/check")
+    with EcoleDirecteClient(conf["username"], conf["password"], device) as client:
+        try:
+            client.connect()
+            content = client.download(args.id, args.type)
+        except EcoleDirecteError as error:
+            sys.exit(f"Refusé par École Directe : {error}")
+    kind = "PDF" if content.startswith(b"%PDF") else "pas un PDF : " + repr(content[:16])
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"{args.id}.{'pdf' if content.startswith(b'%PDF') else 'bin'}"
+    path.write_bytes(content)
+    print(f"{len(content) / 1024:.0f} Ko reçus ({kind}), enregistrés dans {path}")
     return 0
 
 
@@ -1173,20 +1342,41 @@ def cmd_system_memory(args: argparse.Namespace) -> int:
 
 
 def cmd_llm_bench(args: argparse.Namespace) -> int:
-    """Measure each model on a fixed lesson: reading and writing speed, load time, memory."""
-    from skoolathome.agent import bench, config
+    """Measure each model on a fixed lesson: reading and writing speed, load time, memory. Any
+    engine of SKOOLATHOME_MODELS (T30); --save keeps the result for `engines compare`."""
+    from skoolathome.agent import bench, config, tracing
 
     conf = config.load()
-    models = args.model or [m.model for m in conf.models.values() if m.max_tokens]  # not the embedder
-    ollama = bench.Ollama(conf.engine.native_url)
-    print(bench.HEADER)
-    for model in models:
+    roles = [(role, m) for role, m in conf.models.items() if m.max_tokens]  # not the embedder
+    if args.model:  # Ollama models by name, as in T14: measured, not kept
+        roles = [("", config.Model(role="", model=name, family="", quantization="")) for name in args.model]
+    print(f"Moteur : {conf.engine.name}\n" + bench.HEADER)
+    for role, model in roles:
+        engine = model.engine_name(conf.engine)
         for run in range(1, args.runs + 1):
             try:
-                print(bench.measure(ollama, model, run).row(), flush=True)
+                if engine == "ollama":
+                    measured = bench.measure(bench.Ollama(conf.engine.native_url), model.model, run)
+                else:
+                    measured = bench.measure_openai(model.url(conf.engine), model.model, run)
             except Exception as error:  # noqa: BLE001  (show the failure and go on with the next model)
-                print(f"| `{model}` | échec : {error} |||||| ")
-    print("\nCopie ce tableau dans tmp/T14-ollama-langfuse.md.")
+                print(f"| `{model.model}` | échec : {error} |||||| ")
+                continue
+            print(measured.row(), flush=True)
+            if args.save and role and run == args.runs:  # the last run: warm, like an evening
+                with _connect() as conn:
+                    bench.save(conn, engine, role, model.quantization, measured, tracing.release())
+    print("\nCopie ce tableau dans tmp/T14-ollama-langfuse.md." if not args.save else
+          "\nMesures gardées : skoolathome engines compare")
+    return 0
+
+
+def cmd_engines_compare(args: argparse.Namespace) -> int:
+    """The comparison table (T30): quality from make eval, speed from llm bench, per engine."""
+    from skoolathome.evaluation import engines
+
+    with _connect() as conn:
+        print(engines.table(conn))
     return 0
 
 
@@ -1374,6 +1564,13 @@ def main() -> None:
     validate = ed.add_parser("validate", help="validate saved raw responses")
     validate.add_argument("directory")
     validate.set_defaults(run=cmd_ed_validate)
+    attachments_ = ed.add_parser("attachments", help="files attached to the lessons, and their status (T25)")
+    attachments_.add_argument("--limit", type=int, default=40)
+    attachments_.set_defaults(run=cmd_ed_attachments)
+    download = ed.add_parser("download", help="download one attached file, to check by hand (one login)")
+    download.add_argument("id", help="the file's id (skoolathome ed attachments)")
+    download.add_argument("--type", default="FICHIER_CDT", help="École Directe's file type")
+    download.set_defaults(run=cmd_ed_download)
     anonymize = ed.add_parser("anonymize", help="make test fixtures from saved raw responses")
     anonymize.add_argument("source")
     anonymize.add_argument("target")
@@ -1414,10 +1611,15 @@ def main() -> None:
     bench = llm.add_parser("bench", help="measure the models (Ollama): tokens/s, load time, memory")
     bench.add_argument("--model", action="append", help="a model name (default: those of models.toml)")
     bench.add_argument("--runs", type=int, default=2)
+    bench.add_argument("--save", action="store_true", help="keep the measure for skoolathome engines compare (T30)")
     bench.set_defaults(run=cmd_llm_bench)
     try_ = llm.add_parser("try", help="one call traced in Langfuse: summarize a lesson")
     try_.add_argument("--file", help="a text file to summarize (default: a sample lesson)")
     try_.set_defaults(run=cmd_llm_try)
+
+    engines_ = commands.add_parser("engines", help="the engines compared (T30)").add_subparsers(dest="action",
+                                                                                              required=True)
+    engines_.add_parser("compare", help="quality and speed per engine, as a table").set_defaults(run=cmd_engines_compare)
 
     prompt = commands.add_parser("prompt", help="model prompts in Langfuse").add_subparsers(dest="action", required=True)
     push_ = prompt.add_parser("push", help="send the local copies to Langfuse")
@@ -1433,6 +1635,20 @@ def main() -> None:
     feedback.add_argument("--since", type=int, default=0, help="cursor printed by the previous call")
     feedback.add_argument("--json", action="store_true")
     feedback.set_defaults(run=cmd_feedback)
+
+    proposals_ = commands.add_parser("proposals", help="rules the agent proposes from the teachers' habits (T28)"
+                                     ).add_subparsers(dest="action", required=True)
+    run_proposals = proposals_.add_parser("run", help="look for habits, propose the matching rules, send them")
+    run_proposals.add_argument("--dry-run", action="store_true", help="show the habits found, propose nothing")
+    run_proposals.add_argument("--no-send", action="store_true", help="send them with the next evening's batch")
+    run_proposals.add_argument("--today")
+    run_proposals.set_defaults(run=cmd_proposals_run)
+    proposals_.add_parser("list", help="every proposal and the decision on it").set_defaults(run=cmd_proposals_list)
+
+    explain_ = commands.add_parser("explain", help="« Je n'ai pas compris »: explain what the tablet asked (T29)")
+    explain_.add_argument("--now", action="store_true", help="also outside 7:00-22:00")
+    explain_.add_argument("--verbose", action="store_true")
+    explain_.set_defaults(run=cmd_explain)
 
     review = commands.add_parser("review", help="the weekly review: indicators, alerts, sheets to annotate (T24)")
     review.add_argument("--today")
@@ -1486,7 +1702,7 @@ def main() -> None:
 
     pair = commands.add_parser("pair", help="a code and a QR code to pair a phone, a tablet or a computer")
     pair.add_argument("--role", choices=["parent", "child"], default="parent")
-    pair.add_argument("--label", help="the device's name, e.g. « iPhone de Noël » (default: Parent / Enfant)")
+    pair.add_argument("--label", help="the device's name, e.g. « iPhone de Camille » (default: Parent / Enfant)")
     pair.set_defaults(run=cmd_pair)
 
     plan_ = commands.add_parser("plan", help="the evening plan, without any model: tasks and skipped tasks")

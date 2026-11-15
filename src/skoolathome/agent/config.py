@@ -28,10 +28,19 @@ class Model:
     max_tokens: int = 0
     reasoning_effort: str | None = None
     dimensions: int | None = None  # embedding models only
+    base_url: str | None = None    # its own server (llama.cpp: one model per server); else the engine's
+    engine: str | None = None      # its own engine's name, e.g. the embedder left on Ollama (T30)
+
+    def url(self, engine: Engine) -> str:
+        return self.base_url or engine.base_url
+
+    def engine_name(self, engine: Engine) -> str:
+        return self.engine or engine.name
 
     def metadata(self, engine: Engine) -> dict[str, str]:
         """What every trace carries (ARCHITECTURE.md §14.5): filter the scores by model or engine."""
-        return {"model": self.model, "family": self.family, "quantization": self.quantization, "engine": engine.name}
+        return {"model": self.model, "family": self.family, "quantization": self.quantization,
+                "engine": self.engine_name(engine)}
 
 
 @dataclass(frozen=True)

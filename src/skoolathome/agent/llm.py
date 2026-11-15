@@ -25,7 +25,7 @@ def chat_model(role: str, conf: config.Config | None = None) -> ChatOpenAI:
         options["reasoning_effort"] = model.reasoning_effort
     return ChatOpenAI(
         model=model.model,
-        base_url=conf.engine.base_url,
+        base_url=model.url(conf.engine),
         api_key="local",  # required by the client, ignored by Ollama
         temperature=model.temperature,
         max_tokens=model.max_tokens,

@@ -9,7 +9,8 @@
   import { renderText } from "../lib/math";
   import { MAX_SOLO_TRIES, noProgress, soloDone, toReview, type Counters } from "../lib/progress";
   import { basedOn, formatLabel, quoteSource } from "../lib/sheet";
-  import type { Item, Rating, Sheet } from "../lib/types";
+  import type { Explanation, Item, Rating, Sheet } from "../lib/types";
+  import ExplainBox from "./ExplainBox.svelte";
   import ItemInput from "./ItemInput.svelte";
   import RecapView from "./RecapView.svelte";
   import ReportDialog from "./ReportDialog.svelte";
@@ -44,6 +45,7 @@
   let showGuide = $state(false);
   let reporting = $state(false);
   let thanks = $state(false);
+  let explanations = $state<Record<string, Explanation>>({}); // « Je n'ai pas compris », the latest per question
 
   const item = $derived(sheet?.items[index] ?? null);
   const counters = (it: Item): Counters => progress[it.id] ?? noProgress();
@@ -186,6 +188,12 @@
     } catch {
       progress = {}; // offline and never loaded: start from scratch, answers are still kept
     }
+    api.explanations(id).then(
+      (found) => {
+        for (const e of [...found].reverse()) explanations[e.item_id] = e; // newest last: it wins
+      },
+      () => {}, // offline: the button still works once the network is back
+    );
     if (start === "review") begin("together", true);
     else if (start === "together") begin("together");
     else screen = "choose";
@@ -313,6 +321,8 @@
           {#if item.quote}<p class="quote">📖 Dans {quoteSource(sheet, item)} : « {@html renderText(item.quote.excerpt)} »</p>{/if}
           {#if toReview(counters(item), item.type)}<p>On la reverra ensemble.</p>{/if}
         </div>
+        <ExplainBox sheetId={id} itemId={item.id} explanation={explanations[item.id] ?? null}
+          onchange={(e) => (explanations[e.item_id] = e)} />
         <button class="primary" onclick={() => nextSolo(index)}>Continuer</button>
       {/if}
     {:else}
@@ -334,6 +344,8 @@
           {#if item.solution}<p>{@html renderText(item.solution)}</p>{/if}
           {#if item.quote}<p class="quote">📖 Dans {quoteSource(sheet, item)} : « {@html renderText(item.quote.excerpt)} »</p>{/if}
         </div>
+        <ExplainBox sheetId={id} itemId={item.id} explanation={explanations[item.id] ?? null}
+          onchange={(e) => (explanations[e.item_id] = e)} />
       {/if}
       {#if showGuide && item.parent_guide}
         <div class="guide">

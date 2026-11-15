@@ -24,8 +24,13 @@ def save(conn: psycopg.Connection, data: dict, student_id: str | None = None) ->
     """Store what GET /api/feedback returned, then move the cursor. Received twice, stored once.
     Sheets the parent asked for from the PWA become requests of this laptop."""
     counts = {"attempts": 0, "reports": 0, "finishes": 0, "requests": 0, "instructions": 0, "replies": 0,
-              "annotations": 0}
+              "annotations": 0, "explanations": 0}
     with conn.transaction():
+        for e in data.get("explanations", []):  # « Ça m'a aidé ? » (T29): to Langfuse next
+            counts["explanations"] += conn.execute(
+                "UPDATE agent.explanations SET helped = %s, helped_at = %s, sent_to_langfuse_at = NULL WHERE id = %s",
+                (e["helped"], e["helped_at"], e["id"]),
+            ).rowcount
         for n in data.get("annotations", []):  # the weekly annotation (T24): the latest verdict wins
             counts["annotations"] += conn.execute(
                 "INSERT INTO feedback.annotations (id, sheet_id, item_id, ok, problem, comment, created_at) "

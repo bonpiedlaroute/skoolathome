@@ -11,7 +11,7 @@ from skoolathome.rules import privacy
 from skoolathome.schema.instruction import InstructionUpdate
 
 _COLUMNS = ("id, text, form_rule, origin, created_at, status, question, summary, proposal, rule_id, rule_version, "
-            "reason, trace_id")
+            "reason, trace_id, agent_rule, facts, proposal_key")
 WAITING = ("question", "proposed")  # the graph is paused, waiting for the parent
 
 
@@ -21,12 +21,15 @@ def _rows(conn: psycopg.Connection, where: str, params: tuple = ()) -> list[dict
 
 
 def create(conn: psycopg.Connection, *, text: str = "", form_rule: dict | None = None, student_id: str | None,
-           origin: str = "cli", instruction_id: str | None = None, created_at=None) -> str:
+           origin: str = "cli", instruction_id: str | None = None, created_at=None, agent_rule: dict | None = None,
+           facts: list[str] | None = None, proposal_key: str | None = None) -> str:
+    """An instruction of the parent, or a rule proposed by the agent (`agent_rule`, T28)."""
     instruction_id = instruction_id or f"{origin}-{token_hex(6)}"
     conn.execute(
-        "INSERT INTO agent.instructions (id, student_id, text, form_rule, origin, created_at) "
-        "VALUES (%s, %s, %s, %s, %s, coalesce(%s, now())) ON CONFLICT (id) DO NOTHING",
-        (instruction_id, student_id, text.strip(), Jsonb(form_rule) if form_rule else None, origin, created_at),
+        "INSERT INTO agent.instructions (id, student_id, text, form_rule, origin, created_at, agent_rule, facts, "
+        "proposal_key) VALUES (%s, %s, %s, %s, %s, coalesce(%s, now()), %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+        (instruction_id, student_id, text.strip(), Jsonb(form_rule) if form_rule else None, origin, created_at,
+         Jsonb(agent_rule) if agent_rule else None, Jsonb(facts or []), proposal_key),
     )
     return instruction_id
 
@@ -111,9 +114,13 @@ def corrections(conn: psycopg.Connection) -> list[dict]:
 
 def to_report(conn: psycopg.Connection) -> list[InstructionUpdate]:
     """Instructions made online whose new state the PWA does not know yet. No surname (§17)."""
-    rows = _rows(conn, "WHERE origin = 'pwa' AND status <> 'pending' AND reported_at IS NULL ORDER BY updated_at")
+    rows = _rows(conn, "WHERE origin IN ('pwa', 'agent') AND status <> 'pending' AND reported_at IS NULL "
+                       "ORDER BY updated_at")
     names = privacy.teachers(conn)
     return [InstructionUpdate(id=r["id"], status=r["status"], question=privacy.public_text(r["question"], names)[:600],
+                              origin="agent" if r["origin"] == "agent" else "parent",
+                              text=privacy.public_text(r["text"], names)[:600] if r["origin"] == "agent" else "",
+                              facts=[privacy.public_text(f, names)[:300] for f in (r["facts"] or [])][:10],
                               summary=privacy.public_text(r["summary"], names)[:800],
                               proposal=privacy.public_rule(r["proposal"], names), rule_id=r["rule_id"],
                               rule_version=r["rule_version"], reason=privacy.public_text(r["reason"], names)[:600])

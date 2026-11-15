@@ -21,6 +21,7 @@ from skoolathome.api import auth, nip98, push
 from skoolathome.api.auth import Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
+from skoolathome.schema.explanation import ExplanationAnswer, ExplanationRequest, Helped
 from skoolathome.schema.instruction import (
     ALLOWED_REPLIES,
     InstructionReply,
@@ -395,7 +396,7 @@ def list_requests(device: Device = Depends(parent_device), conn: psycopg.Connect
 # -------------------------------------------------------------- instructions (T21)
 
 _INSTRUCTION_COLUMNS = ("id, text, rule, created_at, status, question, summary, proposal, rule_id, rule_version, "
-                        "reason, waiting, updated_at")
+                        "reason, waiting, updated_at, origin, facts")
 
 
 def _instruction_json(row) -> dict:
@@ -455,6 +456,105 @@ def list_rules(device: Device = Depends(parent_device), conn: psycopg.Connection
                         "ORDER BY status <> 'active', id").fetchall()
     return [{"id": r[0], "version": r[1], "status": r[2], "summary": r[3], "body": r[4], "received_at": r[5]}
             for r in rows]
+
+
+# ------------------------------------------------------- « Je n'ai pas compris » (T29)
+
+_EXPLANATION_COLUMNS = "id, sheet_id, item_id, question, status, explanation, reason, created_at, answered_at, helped"
+
+
+def _explanation_json(row) -> dict:
+    return dict(zip(_EXPLANATION_COLUMNS.split(", "), row))
+
+
+@app.post("/api/explanations", status_code=201)
+def ask_explanation(
+    body: ExplanationRequest, device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)
+) -> dict:
+    """A question not understood: queued for the laptop. Asked twice, the waiting request is kept."""
+    sheet = _load_sheet(conn, body.sheet_id)
+    if not any(item["id"] == body.item_id for item in sheet["items"]):
+        raise HTTPException(404, "unknown item")
+    waiting = conn.execute(f"SELECT {_EXPLANATION_COLUMNS} FROM explanations WHERE sheet_id = %s AND item_id = %s "
+                           "AND status = 'pending'", (body.sheet_id, body.item_id)).fetchone()
+    if waiting is not None:
+        return _explanation_json(waiting)
+    row = conn.execute(
+        f"INSERT INTO explanations (id, sheet_id, item_id, device_id, question) VALUES (%s, %s, %s, %s, %s) "
+        f"RETURNING {_EXPLANATION_COLUMNS}",
+        (f"exp-{secrets.token_hex(6)}", body.sheet_id, body.item_id, device.id, body.question.strip()),
+    ).fetchone()
+    return _explanation_json(row)
+
+
+@app.get("/api/explanations")
+def list_explanations(
+    sheet_id: str | None = None, device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)
+) -> list[dict]:
+    rows = conn.execute(
+        f"SELECT {_EXPLANATION_COLUMNS} FROM explanations WHERE %(s)s::text IS NULL OR sheet_id = %(s)s "
+        "ORDER BY created_at DESC LIMIT 30", {"s": sheet_id},
+    ).fetchall()
+    return [_explanation_json(row) for row in rows]
+
+
+@app.get("/api/explanations/{explanation_id}")
+def get_explanation(
+    explanation_id: str, device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)
+) -> dict:
+    row = conn.execute(f"SELECT {_EXPLANATION_COLUMNS} FROM explanations WHERE id = %s", (explanation_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "unknown explanation")
+    return _explanation_json(row)
+
+
+@app.post("/api/explanations/{explanation_id}/helped")
+def explanation_helped(
+    explanation_id: str, body: Helped, device: Device = Depends(current_device),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """« Ça m'a aidé ? » Oui / Toujours pas. The laptop reads it with the feedback."""
+    row = conn.execute(
+        "UPDATE explanations SET helped = %s, helped_at = now() WHERE id = %s AND status = 'done' "
+        f"RETURNING {_EXPLANATION_COLUMNS}", (body.helped, explanation_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(409, "no explanation to rate")
+    return _explanation_json(row)
+
+
+@app.get("/api/agent/explanations")
+def pending_explanations(
+    agent: nip98.Agent = Depends(nip98.require_agent), conn: psycopg.Connection = Depends(get_conn)
+) -> list[dict]:
+    """What the laptop has to explain, oldest first."""
+    rows = conn.execute("SELECT id, sheet_id, item_id, question, created_at FROM explanations WHERE status = 'pending' "
+                        "ORDER BY created_at LIMIT 10").fetchall()
+    return [{"id": r[0], "sheet_id": r[1], "item_id": r[2], "question": r[3], "created_at": r[4]} for r in rows]
+
+
+@app.post("/api/agent/explanations/{explanation_id}")
+def answer_explanation(
+    explanation_id: str, body: ExplanationAnswer, agent: nip98.Agent = Depends(nip98.require_agent),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """The explanation (or why there is none), then a notification to every device."""
+    row = conn.execute(
+        "UPDATE explanations e SET status = %s, explanation = %s, reason = %s, answered_at = now() "
+        "FROM sheets s WHERE e.id = %s AND s.id = e.sheet_id RETURNING s.subject, s.body, e.item_id",
+        (body.status, Jsonb(body.explanation.model_dump(mode="json")) if body.explanation else None, body.reason,
+         explanation_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "unknown explanation")
+    subject, sheet, item_id = row
+    prompt = next((i["prompt"] for i in sheet["items"] if i["id"] == item_id), "")
+    push.send(conn, {
+        "title": "Révisions : explication prête" if body.status == "done" else "Révisions : pas d'explication",
+        "body": f"{subject} : « {prompt[:80]} »" if body.status == "done" else f"{subject} : {body.reason[:160]}",
+        "url": f"/#/explanation/{explanation_id}", "tag": f"explanation-{explanation_id}",
+    })
+    return {"ok": True}
 
 
 # ------------------------------------------------------------- weekly review (T24)
@@ -610,12 +710,24 @@ def publish_batch(
             if row is not None:
                 answered.append((update, row))
         for change in batch.instructions:
-            done = conn.execute(
-                "UPDATE instructions SET status = %s, question = %s, summary = %s, proposal = %s, rule_id = %s, "
-                "rule_version = %s, reason = %s, waiting = false, updated_at = now() WHERE id = %s RETURNING id",
-                (change.status, change.question, change.summary, Jsonb(change.proposal) if change.proposal else None,
-                 change.rule_id, change.rule_version, change.reason, change.id),
-            ).fetchone()
+            values = (change.status, change.question, change.summary, Jsonb(change.proposal) if change.proposal else None,
+                      change.rule_id, change.rule_version, change.reason)
+            if change.origin == "agent":  # a rule the agent proposes (T28): it starts here
+                done = conn.execute(
+                    "INSERT INTO instructions (id, text, origin, facts, status, question, summary, proposal, rule_id, "
+                    "rule_version, reason) VALUES (%s, %s, 'agent', %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, question = EXCLUDED.question, "
+                    "summary = EXCLUDED.summary, proposal = EXCLUDED.proposal, rule_id = EXCLUDED.rule_id, "
+                    "rule_version = EXCLUDED.rule_version, reason = EXCLUDED.reason, waiting = false, "
+                    "updated_at = now() RETURNING id",
+                    (change.id, change.text, Jsonb(change.facts), *values),
+                ).fetchone()
+            else:
+                done = conn.execute(
+                    "UPDATE instructions SET status = %s, question = %s, summary = %s, proposal = %s, rule_id = %s, "
+                    "rule_version = %s, reason = %s, waiting = false, updated_at = now() WHERE id = %s RETURNING id",
+                    (*values, change.id),
+                ).fetchone()
             if done is not None:
                 instructed.append(change)
         if batch.rules is not None:
@@ -634,7 +746,8 @@ def publish_batch(
     for change in instructed:
         title, body = {
             "question": ("une question sur ta consigne", change.question),
-            "proposed": ("consigne à valider", change.summary),
+            "proposed": ("l'agent propose une règle" if change.origin == "agent" else "consigne à valider",
+                         change.summary),
             "saved": ("consigne enregistrée", change.summary),
             "failed": ("consigne pas comprise", change.reason),
         }.get(change.status, ("", ""))
@@ -707,6 +820,10 @@ def feedback(
         f"WHERE {received('created_at')} ORDER BY id",
         window,
     ).fetchall()
+    helped = conn.execute(
+        f"SELECT id, helped, helped_at FROM explanations WHERE {received('helped_at')} ORDER BY helped_at",
+        window,
+    ).fetchall()
     return {
         **window,
         "attempts": [
@@ -739,6 +856,7 @@ def feedback(
              "created_at": r[6]}
             for r in annotations
         ],
+        "explanations": [{"id": r[0], "helped": r[1], "helped_at": r[2]} for r in helped],
     }
 
 

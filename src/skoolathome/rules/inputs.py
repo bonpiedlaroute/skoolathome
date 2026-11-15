@@ -40,12 +40,21 @@ def load(conn: psycopg.Connection, student_id: str, run_date: date) -> PlanInput
         (student_id, start, horizon),
     ).fetchall():
         holidays |= {first + timedelta(days=n) for n in range((last - first).days + 1)}
+    # A lesson's text, plus the pages of the files its teacher attached (T25): a lesson with only a
+    # PDF gets its sheet, and a sheet is made again when its PDF arrives.
     lessons = [
         LessonRef(source=r[0], source_id=r[1], day=r[2], subject_code=r[3], subject=r[4], chars=r[5], fingerprint=r[6])
         for r in conn.execute(
-            "SELECT source, source_id, day, subject_code, subject, "
-            "CASE WHEN is_empty THEN 0 ELSE length(content) END, fingerprint FROM school.lessons "
-            "WHERE student_id = %s AND day BETWEEN %s AND %s",
+            "SELECT l.source, l.source_id, l.day, l.subject_code, l.subject, "
+            "(CASE WHEN l.is_empty THEN 0 ELSE length(l.content) END) + coalesce(att.chars, 0)::int, "
+            "l.fingerprint || coalesce(':' || att.files, '') FROM school.lessons l "
+            "LEFT JOIN LATERAL (SELECT sum(length(btrim(p.text))) AS chars, string_agg(DISTINCT a.sha256, ',') AS files "
+            "  FROM school.attachments a JOIN material.documents d ON d.source = a.source "
+            "  AND d.source_ref = a.sha256 AND d.status = 'indexed' "
+            "  JOIN material.pages p ON p.document_id = d.id "
+            "  WHERE a.source = l.source AND a.student_id = l.student_id AND a.lesson_source_id = l.source_id "
+            "  AND a.status = 'downloaded') att ON true "
+            "WHERE l.student_id = %s AND l.day BETWEEN %s AND %s",
             (student_id, start, run_date),
         ).fetchall()
     ]

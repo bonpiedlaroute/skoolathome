@@ -69,6 +69,9 @@ class InstructionUpdate(Strict):
 
     id: str = Field(min_length=1, max_length=64)
     status: Literal["question", "proposed", "saved", "rejected", "failed"]
+    origin: Literal["parent", "agent"] = "parent"  # agent: a rule it proposes (T28), created by this update
+    text: str = Field(default="", max_length=600)    # agent: what it saw, in one sentence
+    facts: list[str] = Field(default=[], max_length=10)
     question: str = Field(default="", max_length=600)
     summary: str = Field(default="", max_length=800)  # « J'ai compris : … »
     proposal: dict | None = None                       # the rule proposed, for the form

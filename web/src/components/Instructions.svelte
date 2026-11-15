@@ -13,6 +13,7 @@
   let rules = $state<PublishedRule[]>([]);
   let text = $state("");
   let answers = $state<Record<string, string>>({});
+  let refusals = $state<Record<string, string>>({}); // why the parent refuses a proposal of the agent (T28)
   let error = $state("");
   // What the form edits: a proposal ([Modifier]), an existing rule, or a new one.
   let editing = $state<{ title: string; rule: RuleBody | null; instruction?: string } | null>(null);
@@ -86,8 +87,15 @@
 
   {#each instructions as instruction (instruction.id)}
     <div class="card">
-      <div class="muted">{when(instruction.created_at)}</div>
-      <p style="margin:0.3rem 0">{instruction.text ? `« ${instruction.text} »` : "Règle écrite avec le formulaire"}</p>
+      <div class="muted">{when(instruction.created_at)}{instruction.origin === "agent" ? " · proposition de l'agent" : ""}</div>
+      {#if instruction.origin === "agent"}
+        <p style="margin:0.3rem 0">{instruction.text}</p>
+        {#if instruction.facts?.length}
+          <ul class="facts">{#each instruction.facts as fact}<li>{fact}</li>{/each}</ul>
+        {/if}
+      {:else}
+        <p style="margin:0.3rem 0">{instruction.text ? `« ${instruction.text} »` : "Règle écrite avec le formulaire"}</p>
+      {/if}
       {#if instruction.waiting || instruction.status === "pending"}
         <p class="muted">{instruction.waiting ? "Réponse envoyée, " : ""}en attente du portable.</p>
       {:else if instruction.status === "question"}
@@ -99,12 +107,20 @@
       {:else if instruction.status === "proposed"}
         <p>{instruction.summary}</p>
         <div class="row">
-          <button class="primary" onclick={() => act(() => api.replyInstruction(instruction.id, "approve"))}>Valider</button>
+          <button class="primary" onclick={() => act(() => api.replyInstruction(instruction.id, "approve"))}>
+            {instruction.origin === "agent" ? "Accepter" : "Valider"}
+          </button>
           <button onclick={() => (editing = { title: "Modifier la règle proposée", rule: instruction.proposal, instruction: instruction.id })}>
             Modifier
           </button>
-          <button onclick={() => act(() => api.replyInstruction(instruction.id, "reject"))}>Annuler</button>
+          <button onclick={() => act(() => api.replyInstruction(instruction.id, "reject", { text: (refusals[instruction.id] ?? "").trim() }))}>
+            {instruction.origin === "agent" ? "Refuser" : "Annuler"}
+          </button>
         </div>
+        {#if instruction.origin === "agent"}
+          <input type="text" style="margin-top:0.5rem" bind:value={refusals[instruction.id]} maxlength="600"
+            placeholder="Pourquoi refuser ? (facultatif) Elle ne sera plus jamais proposée." aria-label="Motif du refus" />
+        {/if}
         <p class="muted" style="margin-bottom:0.3rem">Ou corrige avec tes mots :</p>
         <div class="row">
           <input type="text" style="flex:1" bind:value={answers[instruction.id]} maxlength="600"
@@ -114,7 +130,7 @@
       {:else if instruction.status === "saved"}
         <p class="good">{instruction.summary}</p>
       {:else if instruction.status === "rejected"}
-        <p class="muted">Annulée : aucune règle enregistrée.</p>
+        <p class="muted">{instruction.origin === "agent" ? "Refusée : elle ne sera plus proposée." : "Annulée : aucune règle enregistrée."}</p>
       {:else}
         <p class="bad">Pas compris : {instruction.reason} </p>
       {/if}
@@ -139,4 +155,5 @@
 
 <style>
   label { display: block; margin: 0 0 0.4rem; font-weight: 600; }
+  .facts { margin: 0.3rem 0 0.6rem; padding-left: 1.2rem; color: var(--muted); }
 </style>

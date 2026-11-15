@@ -26,7 +26,8 @@ from skoolathome.subjects import EXCLUDED_SUBJECTS, label
 
 REPO = Path(__file__).resolve().parents[3]
 TRAPS = REPO / "evals" / "traps.json"
-DATASETS = {"sheets": "skoolathome-fiches", "tests": "skoolathome-controles"}
+DATASETS = {"sheets": "skoolathome-fiches", "tests": "skoolathome-controles", "retrieval": "skoolathome-recherche",
+            "instructions": "skoolathome-consignes", "explanations": "skoolathome-explications"}
 NAMES_SECRET = "names"  # ~/.config/skoolathome/names.json: {"names": ["Léo", …]}, never in the repo
 TITLES = {"m", "mr", "mme", "mlle", "monsieur", "madame", "mademoiselle"}
 PLACEHOLDER = "Camille"  # a name instead of every real one, so the text still reads naturally
@@ -91,6 +92,24 @@ def sync(conn: psycopg.Connection) -> int:
     return len(rows)
 
 
+def retrieval_cases(conn: psycopg.Connection, student_id: str) -> int:
+    """Each lesson whose teacher attached a PDF is a free case of the « recherche » set (T25, T31):
+    the lesson, and the document the search should find among its first pages. Only the ids are
+    kept: no text, no file name."""
+    rows = conn.execute(
+        "SELECT DISTINCT a.lesson_source_id, a.sha256, l.subject_code, l.day FROM school.attachments a "
+        "JOIN school.lessons l ON l.source = a.source AND l.student_id = a.student_id AND l.source_id = a.lesson_source_id "
+        "JOIN material.documents d ON d.source = a.source AND d.source_ref = a.sha256 AND d.status = 'indexed' "
+        "WHERE a.student_id = %s AND a.status = 'downloaded' AND length(btrim(l.content)) >= 40",
+        (student_id,),
+    ).fetchall()
+    for lesson, sha, code, day in rows:
+        save(conn, Case(f"attachment-{lesson}-{sha[:12]}", "retrieval", "attachment", {"lesson": lesson},
+                        {"documents": [{"source": "ecoledirecte", "source_ref": sha, "page": None}]},
+                        {"subject": code, "day": day.isoformat(), "note": "pièce jointe de la séance"}))
+    return len(rows)
+
+
 # ------------------------------------------------------------------------- anonymizing
 
 
@@ -139,14 +158,15 @@ def _accented(letter: str) -> str:
 # ------------------------------------------------------------------- cases from real data
 
 
-def _model_input(conn: psycopg.Connection, sheet_id: str) -> tuple[dict, dict]:
+def model_input(conn: psycopg.Connection, sheet_id: str) -> tuple[dict, dict]:
+    """(what the model read for a sheet, the sheet itself). LookupError for a sheet not made here."""
     row = conn.execute("SELECT model_input, body, student_id, subject_code, kind, rule_id, rule_version, "
                        "visible_from, due_by, minutes FROM agent.sheets WHERE id = %s", (sheet_id,)).fetchone()
     if row is None:
         raise LookupError(f"fiche inconnue sur ce portable : {sheet_id}")
-    model_input, body, student, code, kind, rule, version, visible_from, due_by, minutes = row
-    if model_input:
-        return model_input, body or {}
+    read, body, student, code, kind, rule, version, visible_from, due_by, minutes = row
+    if read:
+        return read, body or {}
     # A sheet made before T23: the lessons it cites, read again (the pages are not kept).
     sources, labels = {}, {}
     for key in (body or {}).get("sources", []):
@@ -165,11 +185,11 @@ def _model_input(conn: psycopg.Connection, sheet_id: str) -> tuple[dict, dict]:
 
 def from_sheet(conn: psycopg.Connection, sheet_id: str, names: list[str]) -> Case:
     """A sheet made by the agent and judged good: what the model read, anonymized."""
-    model_input, body = _model_input(conn, sheet_id)
-    case_input = anonymize(model_input, names)
+    read, body = model_input(conn, sheet_id)
+    case_input = anonymize(read, names)
     return Case(f"real-{sheet_id}", "sheets", "real", case_input, {"abstain": False},
-                {"sheet": sheet_id, "subject": model_input["task"].get("subject_code", ""),
-                 "format": model_input["task"].get("kind", "")})
+                {"sheet": sheet_id, "subject": read["task"].get("subject_code", ""),
+                 "format": read["task"].get("kind", "")})
 
 
 def from_report(conn: psycopg.Connection, report_id: int, names: list[str], answer: str = "") -> Case:
@@ -180,7 +200,7 @@ def from_report(conn: psycopg.Connection, report_id: int, names: list[str], answ
     if row is None:
         raise LookupError(f"signalement inconnu : {report_id}")
     sheet_id, item_id, reason, comment = row
-    model_input, body = _model_input(conn, sheet_id)
+    read, body = model_input(conn, sheet_id)
     item = next((i for i in body.get("items", []) if i["id"] == item_id), None)
     if reason == "wrong_answer" and not answer:
         raise ValueError("pour une réponse fausse, donne la bonne : --answer « … »")
@@ -188,9 +208,9 @@ def from_report(conn: psycopg.Connection, report_id: int, names: list[str], answ
                 "prompt": item["prompt"] if item else "", "answer": item["answer"] if item else ""}
     if answer:
         reported["correct_answer"] = answer
-    return Case(f"report-{report_id}", "sheets", "report", anonymize(model_input, names),
+    return Case(f"report-{report_id}", "sheets", "report", anonymize(read, names),
                 {"abstain": False, "report": anonymize(reported, names)},
-                {"sheet": sheet_id, "reason": reason, "subject": model_input["task"].get("subject_code", "")})
+                {"sheet": sheet_id, "reason": reason, "subject": read["task"].get("subject_code", "")})
 
 
 def from_grades(conn: psycopg.Connection, student_id: str, days: int = 120) -> list[Case]:

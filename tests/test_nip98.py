@@ -16,6 +16,7 @@ from skoolathome.api import app as app_module
 from skoolathome.api.app import app
 from skoolathome.publish.client import ApiClient, ApiError
 from skoolathome.publish.nip46 import authorization_header, nip98_tags
+from skoolathome.schema.explanation import ExplanationAnswer
 from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
 from skoolathome.schema.request import RequestUpdate
 from skoolathome.schema.review import WeeklyReview
@@ -360,3 +361,59 @@ def test_the_weekly_review_is_pushed_and_its_sheets_annotated(agent, parent, mon
     parent.post("/api/annotations", json=changed)
     found = sorted((a["item_id"], a["ok"], a["problem"]) for a in agent.feedback(0)["annotations"])
     assert found == [("q1", True, None), ("q2", True, None)]
+
+
+
+# ------------------------------------------------------- « Je n'ai pas compris » (T29)
+
+
+def test_an_explanation_is_asked_answered_then_rated(agent, parent, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append((payload, kw)) or {"sent": 1})
+    agent.publish([sheet("b1")])
+    child = pair_child(parent)
+    asked = child.post("/api/explanations", json={"sheet_id": "b1", "item_id": "q1", "question": "pourquoi 1/2 ?"})
+    assert asked.status_code == 201 and asked.json()["status"] == "pending"
+    again = child.post("/api/explanations", json={"sheet_id": "b1", "item_id": "q1"})
+    assert again.json()["id"] == asked.json()["id"]  # asked twice: one request
+    assert child.post("/api/explanations", json={"sheet_id": "b1", "item_id": "q9"}).status_code == 404
+    explanation_id = asked.json()["id"]
+    assert child.post(f"/api/explanations/{explanation_id}/helped", json={"helped": True}).status_code == 409
+
+    [waiting] = agent.pending_explanations()
+    assert (waiting["id"], waiting["question"]) == (explanation_id, "pourquoi 1/2 ?")
+    agent.answer_explanation(explanation_id, ExplanationAnswer(status="done", explanation={
+        "text": "3/6 et 1/2 sont égales.", "quote": {"source_id": "lesson:x", "excerpt": "on divise"},
+        "source_label": "ton cours du lundi 9/11"}))
+    payload, options = pushed[-1]
+    assert payload["url"] == f"/#/explanation/{explanation_id}" and payload["title"] == "Révisions : explication prête"
+    assert options == {}  # every device: the child asked
+    assert agent.pending_explanations() == []
+    shown = child.get(f"/api/explanations/{explanation_id}").json()
+    assert shown["status"] == "done" and shown["explanation"]["source_label"] == "ton cours du lundi 9/11"
+
+    assert child.post(f"/api/explanations/{explanation_id}/helped", json={"helped": False}).json()["helped"] is False
+    [rated] = agent.feedback(0)["explanations"]
+    assert (rated["id"], rated["helped"]) == (explanation_id, False)
+    assert [e["id"] for e in child.get("/api/explanations?sheet_id=b1").json()] == [explanation_id]
+
+
+
+# ---------------------------------------------------------------- proposals (T28)
+
+
+def test_a_proposal_of_the_agent_is_created_by_the_batch_and_refused_with_a_reason(agent, parent, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append(payload) or {"sent": 1})
+    proposal = InstructionUpdate(id="agent-1", status="proposed", origin="agent", proposal=PROPOSAL,
+                                 text="En Histoire-géographie, le prof semble interroger en début de cours.",
+                                 facts=["Le jeudi 12/11, la séance dit : « Interro orale sur la leçon »"],
+                                 summary="L'agent propose : En Histoire-géographie…")
+    agent.publish([], instructions=[proposal])
+    agent.publish([], instructions=[proposal])  # sent again: still one
+    [listed] = parent.get("/api/instructions").json()
+    assert (listed["origin"], listed["status"], listed["facts"]) == ("agent", "proposed", proposal.facts)
+    assert pushed[-1]["title"] == "Révisions : l'agent propose une règle"
+    parent.post("/api/instructions/agent-1/reply", json={"kind": "reject", "text": "seulement avant les contrôles"})
+    [refused] = agent.feedback(0)["instruction_replies"]
+    assert (refused["kind"], refused["text"]) == ("reject", "seulement avant les contrôles")

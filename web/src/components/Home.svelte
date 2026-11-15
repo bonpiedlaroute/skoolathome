@@ -4,7 +4,7 @@
   import { api, warmCache } from "../lib/api";
   import { outbox } from "../lib/outbox.svelte";
   import { formatLabel } from "../lib/sheet";
-  import type { Device, SheetSummary } from "../lib/types";
+  import type { Device, Explanation, SheetSummary } from "../lib/types";
   import Notifications from "./Notifications.svelte";
 
   let {
@@ -24,6 +24,9 @@
   } = $props();
 
   let sheets = $state<SheetSummary[] | null>(null);
+  // « Je n'ai pas compris »: explanations ready and not rated yet, or still waiting (T29).
+  let explanations = $state<Explanation[]>([]);
+  const shown = $derived(explanations.filter((e) => e.status === "pending" || (e.status === "done" && e.helped === null)));
   let error = $state("");
   let offline = $state(!navigator.onLine);
 
@@ -50,6 +53,7 @@
         return;
       }
       if (navigator.serviceWorker?.controller) void warmCache();
+      api.explanations().then((found) => (explanations = found), () => {});
     })();
     return () => {
       window.removeEventListener("online", update);
@@ -76,6 +80,13 @@
     {outbox.pending > 0 ? ` ${outbox.pending} réponse${outbox.pending > 1 ? "s" : ""} en attente d'envoi.` : ""}
   </p>
 {/if}
+
+{#each shown as e (e.id)}
+  <div class="card row spread">
+    <span>{e.status === "pending" ? "Explication demandée : réponse dès que l'ordinateur est allumé." : "Ton explication est prête."}</span>
+    {#if e.status === "done"}<a class="button primary" href="#/explanation/{encodeURIComponent(e.id)}">Lire</a>{/if}
+  </div>
+{/each}
 
 {#if error}
   <p class="error">{error}</p>

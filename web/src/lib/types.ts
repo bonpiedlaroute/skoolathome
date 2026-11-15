@@ -122,6 +122,8 @@ export interface Instruction {
   rule_version: number | null;
   reason: string;
   waiting: boolean; // replied: the laptop has not read it yet
+  origin?: "parent" | "agent"; // agent: a rule it proposes from what it saw (T28)
+  facts?: string[];
 }
 
 export interface PublishedRule {
@@ -175,4 +177,18 @@ export interface ItemAnnotation {
   ok: boolean;
   problem?: Problem | null;
   comment?: string;
+}
+
+/** « Je n'ai pas compris » (T29): an explanation asked on a question, made by the computer. */
+export interface Explanation {
+  id: string;
+  sheet_id: string;
+  item_id: string;
+  question: string;
+  status: "pending" | "done" | "abstained";
+  explanation: { text: string; example: string; quote: Quote | null; source_label: string } | null;
+  reason: string;
+  created_at: string;
+  answered_at: string | null;
+  helped: boolean | null;
 }

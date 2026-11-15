@@ -1,13 +1,17 @@
-"""What this laptop can really do: tokens/s to read and to write, load time, memory (T14).
+"""What this laptop can really do: tokens/s to read and to write, load time, memory (T14), and
+the same for the other engines of the comparison (T30).
 
-Uses Ollama's own API, which reports durations (`prompt_eval_*`, `eval_*`, `load_duration`);
-the OpenAI-compatible API does not.
+With Ollama, its own API reports durations (`prompt_eval_*`, `eval_*`, `load_duration`). Another
+engine (llama.cpp, OpenVINO) is measured through the OpenAI-compatible API: the time to the first
+token gives the reading speed, the rest the writing speed.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -60,8 +64,13 @@ class Measure:
     model_bytes: int  # as reported by Ollama for the loaded model
     gpu_bytes: int  # part of it on the iGPU (Vulkan)
     ram_delta_bytes: int  # what the system lost in available memory while the model was loaded
+    system_used_bytes: int = 0      # RAM used by the whole system, for engines that do not tell
+    joules_per_token: float | None = None  # when the processor's energy counter can be read
 
     def row(self) -> str:
+        if not self.model_bytes:  # another engine: it loaded the model at start, and does not say its size
+            return (f"| `{self.model}` | {self.prompt_tokens_per_second:.0f} | {self.generated_tokens_per_second:.1f} | "
+                    f"— | — | {sysinfo.gib(self.system_used_bytes)} utilisés au total | {self.total_seconds:.0f} s |")
         gpu = f"{sysinfo.gib(self.gpu_bytes)}" if self.gpu_bytes else "0"
         return (f"| `{self.model}` | {self.prompt_tokens_per_second:.0f} | "
                 f"{self.generated_tokens_per_second:.1f} | {self.load_seconds:.1f} s | "
@@ -121,7 +130,9 @@ def measure(ollama: Ollama, model: str, run: int = 1) -> Measure:
     think = False if "thinking" in ollama.capabilities(model) else None  # reflection mode off
     ollama.unload_all()
     before = sysinfo.memory()
+    energy = energy_joules()
     result = ollama.generate(model, f"Essai {run}.\n{INSTRUCTION}{SAMPLE_LESSON}", think)
+    spent = _spent(energy, energy_joules())
     after = sysinfo.memory()
     loaded = ollama.loaded(model)
     seconds = 1e-9
@@ -136,4 +147,81 @@ def measure(ollama: Ollama, model: str, run: int = 1) -> Measure:
         model_bytes=loaded.get("size", 0),
         gpu_bytes=loaded.get("size_vram", 0),
         ram_delta_bytes=max(before.available - after.available, 0),
+        system_used_bytes=after.used,
+        joules_per_token=spent / result["eval_count"] if spent is not None and result.get("eval_count") else None,
+    )
+
+
+RAPL = Path("/sys/class/powercap/intel-rapl:0")  # the processor package: cores, iGPU and NPU
+
+
+def energy_joules() -> float | None:
+    """The processor's energy counter, or None: since 2020 most kernels let only root read it
+    (sudo chmod o+r /sys/class/powercap/intel-rapl:0/energy_uj, until the next boot)."""
+    try:
+        return int((RAPL / "energy_uj").read_text()) / 1e6
+    except (OSError, ValueError):
+        return None
+
+
+def _spent(before: float | None, after: float | None) -> float | None:
+    if before is None or after is None:
+        return None
+    if after < before:  # the counter wrapped around
+        try:
+            after += int((RAPL / "max_energy_range_uj").read_text()) / 1e6
+        except (OSError, ValueError):
+            return None
+    return after - before
+
+
+def measure_openai(base_url: str, model: str, run: int = 1, timeout: float = 900,
+                   http: httpx.Client | None = None) -> Measure:
+    """An OpenAI-compatible server (llama.cpp, OpenVINO), its model already loaded: streamed, the
+    first token marks the end of the reading. The run number goes first in the prompt, so that the
+    server cannot reuse a cached prompt."""
+    http = http or httpx.Client(base_url=base_url, timeout=timeout)
+    body = {"model": model, "messages": [{"role": "user", "content": f"Essai {run}.\n{INSTRUCTION}{SAMPLE_LESSON}"}],
+            "max_tokens": GENERATED_TOKENS, "temperature": 0, "seed": 1, "stream": True,
+            "stream_options": {"include_usage": True}}
+    energy = energy_joules()
+    started = time.monotonic()
+    first: float | None = None
+    usage: dict = {}
+    pieces = 0
+    with http.stream("POST", "/chat/completions", json=body) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            chunk = json.loads(line[6:])
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                if delta.get("content") or delta.get("reasoning_content"):
+                    first = first or time.monotonic()
+                    pieces += 1
+    ended = time.monotonic()
+    first = first or ended
+    generated = usage.get("completion_tokens") or pieces
+    spent = _spent(energy, energy_joules())
+    return Measure(
+        model=model, load_seconds=0.0, prompt_tokens=usage.get("prompt_tokens", 0),
+        prompt_tokens_per_second=usage.get("prompt_tokens", 0) / max(first - started, 1e-9),
+        generated_tokens=generated, generated_tokens_per_second=generated / max(ended - first, 1e-9),
+        total_seconds=ended - started, model_bytes=0, gpu_bytes=0, ram_delta_bytes=0,
+        system_used_bytes=sysinfo.memory().used,
+        joules_per_token=spent / generated if spent is not None and generated else None,
+    )
+
+
+def save(conn, engine: str, role: str, quantization: str, measured: Measure, release: str = "") -> None:
+    conn.execute(
+        "INSERT INTO agent.engine_benchmarks (engine, role, model, quantization, prompt_tokens_per_s, "
+        "generated_tokens_per_s, load_seconds, model_bytes, system_used_bytes, joules_per_token, total_seconds, "
+        "release) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (engine, role, measured.model, quantization, measured.prompt_tokens_per_second,
+         measured.generated_tokens_per_second, measured.load_seconds or None, measured.model_bytes or None,
+         measured.system_used_bytes or sysinfo.memory().used, measured.joules_per_token, measured.total_seconds,
+         release),
     )

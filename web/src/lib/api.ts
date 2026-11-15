@@ -5,6 +5,7 @@ import { enqueue } from "./outbox.svelte";
 import type { Counters } from "./progress";
 import type {
   Device,
+  Explanation,
   Instruction,
   InstructionReplyKind,
   ItemAnnotation,
@@ -75,6 +76,13 @@ export const api = {
   reviews: () => call<{ week: string; title: string; received_at: string }[]>("GET", "/weekly-reviews"),
   review: (week = "latest") => call<WeeklyReview>("GET", `/weekly-reviews/${encodeURIComponent(week)}`),
   annotate: (sheetId: string, items: ItemAnnotation[]) => call<{ saved: number }>("POST", "/annotations", { sheet_id: sheetId, items }),
+  explain: (sheetId: string, itemId: string, question: string) =>
+    call<Explanation>("POST", "/explanations", { sheet_id: sheetId, item_id: itemId, question }),
+  explanations: (sheetId?: string) =>
+    call<Explanation[]>("GET", `/explanations${sheetId ? `?sheet_id=${encodeURIComponent(sheetId)}` : ""}`),
+  explanation: (id: string) => call<Explanation>("GET", `/explanations/${encodeURIComponent(id)}`),
+  helped: (id: string, helped: boolean) =>
+    call<Explanation>("POST", `/explanations/${encodeURIComponent(id)}/helped`, { helped }),
 
   // Queued: these return at once, the server gets them as soon as it can.
   // traceId: the trace of the generation that made the sheet, so the answer reaches it in Langfuse (T22).

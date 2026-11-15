@@ -51,6 +51,10 @@ class TwoFactorRequired(EcoleDirecteError):
     """École Directe asks for two-factor authentication (code 250)."""
 
 
+class FileTooLarge(EcoleDirecteError):
+    """An attached file above the size limit: not downloaded."""
+
+
 @dataclass(frozen=True)
 class Device:
     """The cn/cv pair: the device École Directe trusts after the security question."""
@@ -250,3 +254,25 @@ class EcoleDirecteClient:
 
     def digital_textbooks(self, student_id: int) -> dict:
         return self._call(f"/Eleves/{student_id}/manuelsNumeriques.awp")
+
+    def download(self, file_id: str, file_type: str = "FICHIER_CDT", *, max_bytes: int = 20 * 2**20) -> bytes:
+        """A file attached by a teacher (T25). École Directe answers with the file itself, or with
+        JSON for an error. Read in pieces: a file larger than `max_bytes` is never kept whole."""
+        params = {"verbe": "get", "fichierId": file_id, "leTypeDeFichier": file_type, "v": self.version}
+        with self._http.stream("POST", "/telechargement.awp", params=params,
+                               content=_body({"forceDownload": 0})) as response:
+            response.raise_for_status()
+            self._keep_tokens(response, {})
+            if "json" in response.headers.get("content-type", ""):
+                body = json.loads(response.read() or b"{}")
+                self._check(body)
+                raise EcoleDirecteError(body.get("code", 0), "un fichier était attendu, la réponse est du JSON")
+            if int(response.headers.get("content-length") or 0) > max_bytes:
+                raise FileTooLarge(0, f"fichier de plus de {max_bytes // 2**20} Mo")
+            pieces, size = [], 0
+            for piece in response.iter_bytes():
+                size += len(piece)
+                if size > max_bytes:
+                    raise FileTooLarge(0, f"fichier de plus de {max_bytes // 2**20} Mo")
+                pieces.append(piece)
+        return b"".join(pieces)

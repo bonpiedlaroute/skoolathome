@@ -1,0 +1,10 @@
+[Unit]
+Description=skoolathome rule proposals, once a week
+
+[Timer]
+OnCalendar=Sat *-*-* 10:00
+# Computer off on Saturday morning: run at the next start.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

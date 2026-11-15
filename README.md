@@ -4,7 +4,7 @@ Revision sheets for a French *collège* student, built every evening from what t
 
 - **Grounded in the course.** Every question quotes the lesson or the textbook page it comes from. Deterministic guards check every quote, answer and computation. A judge model from another family then reads each sheet. When the agent cannot make a sheet that passes, it abstains and says why.
 - **Private by design.** École Directe credentials, lesson texts and model calls stay on the Linux desktop. Only the finished sheets go online, with no surname.
-- **Done on a tablet**, alone (instant correction, hints) or together with a parent (✓ ~ ✗ ratings, parent guide). The parent can ask for a sheet, give instructions in plain French and annotate a few sheets each week.
+- **Done on a tablet**, alone (instant correction, hints) or together with a parent (✓ ~ ✗ ratings, parent guide). A question not understood gets its own explanation, from the lesson, within minutes while the computer is on. The parent can ask for a sheet, give instructions in plain French, accept the rules the agent proposes from the teachers' habits, and annotate a few sheets each week.
 - **Measured.** Every sheet has a Langfuse trace, and real answers and reports come back to that trace. A reference set (`make eval`) blocks any prompt or model change that makes the sheets less correct.
 
 The family-facing app and the command messages are in French.
@@ -13,19 +13,21 @@ The family-facing app and the command messages are in French.
 
 ```mermaid
 flowchart LR
-  ed[("École Directe<br/>timetable, lessons,<br/>homework, grades")]
+  ed[("École Directe<br/>timetable, lessons, homework,<br/>grades, attached PDFs")]
 
   subgraph desktop["Linux desktop (private)"]
     direction TB
-    timer["systemd timer<br/>every evening"]
+    timer["systemd timers<br/>evening, every 5 min, weekly"]
     cli["skoolathome CLI"]
     subgraph graphs["LangGraph"]
       evening["Evening graph<br/>collect, index documents, sync feedback,<br/>instructions, plan, retrieve,<br/>write, guards, judge, publish, report"]
       instr["Graph of instructions<br/>interpret, ask, propose, save the rule"]
     end
+    explainer["Explanations<br/>« Je n'ai pas compris »,<br/>same guards as a sheet"]
+    proposer["Rule proposals<br/>teachers' habits, weekly"]
     ollama["Ollama<br/>generator: Ministral 3 8B<br/>judge: Qwen 3.5 4B<br/>embeddings: bge-m3"]
     appdb[("Postgres 17 + pgvector<br/>raw, school, material, agent,<br/>feedback, LangGraph checkpoints")]
-    drop["Drop folder<br/>PDF and scans (OCR)"]
+    drop["Drop folder and teachers' attachments<br/>PDF and scans (OCR)"]
     evals["make eval, weekly review<br/>reference set, thresholds"]
     secrets["~/.config/skoolathome<br/>secrets, mode 600"]
     subgraph obs["Observability (self-hosted)"]
@@ -44,7 +46,7 @@ flowchart LR
     pwa["PWA (Svelte)<br/>sheets, together mode,<br/>parent view"]
     cron["Daily cron<br/>today's sheets, absence alert"]
   end
-  neon[("Neon Postgres (EU)<br/>sheets, answers, reports, requests,<br/>instructions, rules, reviews, devices")]
+  neon[("Neon Postgres (EU)<br/>sheets, answers, reports, requests,<br/>instructions, rules, explanations,<br/>reviews, devices")]
 
   subgraph family["Family devices"]
     tablet["Child's tablet"]
@@ -52,6 +54,12 @@ flowchart LR
   end
 
   timer --> cli --> evening
+  cli --> explainer
+  cli --> proposer
+  proposer --> instr
+  explainer <--> ollama
+  explainer <--> appdb
+  explainer ==>|"NIP-98: the queue, the answer"| api
   ed -->|"one login per evening"| evening
   drop --> evening
   evening --> instr
@@ -72,7 +80,7 @@ flowchart LR
   api <--> neon
   pwa --- api
   cron --> api
-  tablet <-->|"answers, reports"| pwa
+  tablet <-->|"answers, reports,<br/>« Je n'ai pas compris »"| pwa
   phones <-->|"ratings, requests, instructions,<br/>annotations"| pwa
   api -->|"Web Push"| tablet
   api -->|"Web Push"| phones
@@ -80,16 +88,18 @@ flowchart LR
 
 | Component | Where | Role |
 |---|---|---|
-| Collector | Linux desktop | Reads École Directe once per evening (one login, never retried in a loop) into `raw` (responses as received) and `school` (a common format). |
+| Collector | Linux desktop | Reads École Directe once per evening (one login, never retried in a loop) into `raw` (responses as received) and `school` (a common format). In the same session, it downloads once each PDF a teacher attached to a lesson; the other formats are counted, not processed. |
 | Evening graph | Linux desktop, LangGraph | Plans the evening's sheets from rules (no model involved), gathers the lesson texts and the closest document pages, has the generator write each sheet in an imposed JSON shape, runs the guards, then the judge. Up to three generations per sheet, else an abstention with its reason. Checkpoints in Postgres: a run stopped half-way resumes. |
 | Graph of instructions | Linux desktop, LangGraph | Turns « le prof d'histoire interroge à chaque cours » into a rule. It asks instead of guessing, and saves nothing until the parent approves. It pauses between steps (`interrupt`), resumed when the parent's reply comes back. |
-| Ollama | Linux desktop | All model calls go through its OpenAI-compatible API: changing the engine is one line in `models.toml`. |
+| Rule proposals | Linux desktop | Once a week, looks in what was collected for a teacher's habit (an oral quiz on the lesson, seen in the lesson notes and the grades), and proposes the matching rule with the facts behind it. No model. A refused proposal never comes back. |
+| Explanations | Linux desktop | Every 5 minutes while the computer is on, one signed call asks the API for « Je n'ai pas compris » requests. Each one is explained from the lesson its sheet came from, under the same guards as a sheet, or refused with its reason. Never at the same time as the evening run: one model user at a time. |
+| Ollama | Linux desktop | All model calls go through its OpenAI-compatible API: changing the engine is a configuration file. `src/skoolathome/agent/engines/` holds llama.cpp (Vulkan iGPU, or processor only) and OpenVINO (iGPU, NPU), compared with the same model by `make eval` and `skoolathome engines compare`. |
 | App database | Linux desktop, Docker | Postgres with pgvector, separate from Langfuse's, so Langfuse can be wiped without touching the student's data. |
 | Langfuse | Linux desktop, Docker | One trace per sheet, with the subject, the rule, the format, the model and the prompt versions. It also holds the guard and judge scores, the real feedback, the managed prompts with their `production` and `staging` labels, the reference datasets and the `make eval` experiments. Stopped outside the evening run, it frees 3 to 4 GB of RAM. |
 | Remote signer | Railway | [nostr-remote-signer](https://github.com/bonpiedlaroute/nostr-remote-signer): the Linux desktop never holds the key that the API trusts. Every call to the API is a NIP-98 event signed through NIP-46, and the signer only signs that event kind. |
 | API and PWA | Vercel, Neon | FastAPI functions and the Svelte app. Devices pair with a one-time code and keep an HttpOnly session cookie. The Linux desktop authenticates with NIP-98. Web Push carries the evening report, the weekly review and the finished sheets. |
 
-Each evening the Linux desktop makes three signed calls: it fetches the feedback, publishes one batch, and sends the report. The batch carries the sheets, the answers to the parent's requests and instructions, the list of rules and the weekly review.
+Each evening the Linux desktop makes three signed calls: it fetches the feedback, publishes one batch, and sends the report. The batch carries the sheets, the answers to the parent's requests and instructions, the agent's rule proposals, the list of rules and the weekly review. Between evenings, the explanation timer makes one signed call every 5 minutes, two when it has an explanation to send.
 
 ## Installation
 
@@ -230,13 +240,13 @@ uv run skoolathome sheets list && uv run skoolathome sheets show <id>
 uv run skoolathome evening                    # the real one: collect, sheets, publish, report
 ```
 
-Then the timer. **Edit `WorkingDirectory` in `deploy/systemd/skoolathome-evening.service`** to your clone's path, and:
+Then the timers: the evening run, the explanations every 5 minutes from 7:00 to 22:00, and the rule proposals on Saturday morning. **Edit `WorkingDirectory` in the three `deploy/systemd/*.service` files** to your clone's path, and:
 
 ```bash
-cp deploy/systemd/skoolathome-evening.* ~/.config/systemd/user/
+cp deploy/systemd/skoolathome-*.service deploy/systemd/skoolathome-*.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now skoolathome-evening.timer
-loginctl enable-linger "$USER"                # so the user timer runs without an open session
+systemctl --user enable --now skoolathome-evening.timer skoolathome-explain.timer skoolathome-proposals.timer
+loginctl enable-linger "$USER"                # so the user timers run without an open session
 ```
 
 ## Day to day
@@ -247,10 +257,14 @@ loginctl enable-linger "$USER"                # so the user timer runs without a
 | `skoolathome ask maths les fractions égales --revision --now` | a sheet on demand, made and published now (also from the PWA) |
 | `skoolathome instructions add "…"` / `instructions sync` | an instruction in plain French; read the ones written in the PWA now |
 | `skoolathome rules list` / `rules set before_test items=4` | the rules, versioned; change one by hand |
-| `skoolathome material index` | index the PDFs dropped in `data/manual/<subject>/` |
+| `skoolathome material index` | index the PDFs dropped in `data/manual/<subject>/`, and the teachers' attachments |
+| `skoolathome ed attachments` | the files attached to the lessons, and whether each one was downloaded |
+| `skoolathome explain --now` | answer the « Je n'ai pas compris » requests now |
+| `skoolathome proposals run [--dry-run]` | look for the teachers' habits, and propose the matching rules |
 | `skoolathome scores send --fetch` | real feedback to Langfuse now, without waiting for the evening |
 | `skoolathome review [--send]` | the weekly review; sent automatically from Friday |
 | `make eval` / `make eval-production` / `make promote` | candidate prompts (`staging`) against `production`; promotion only if every blocking threshold holds |
+| `skoolathome engines compare` | quality and speed of each engine measured, side by side |
 
 ## Development
 
@@ -263,7 +277,7 @@ make eval-quick                    # test detection and the traps that need no m
 ```
 src/skoolathome/
   collectors/   École Directe and the drop folder
-  agent/        evening graph, graph of instructions, guards, judge, prompts, tracing, scores
+  agent/        evening graph, graph of instructions, proposals, explanations, guards, judge, prompts, engines
   rules/        rules, evening plan, test detection
   evaluation/   reference set, make eval, weekly review
   material/     PDF extraction, OCR, pgvector search
@@ -272,6 +286,6 @@ src/skoolathome/
   schema/       shapes shared by the Linux desktop and the API
   store/        local database access and migrations
 web/            the PWA (Svelte 5)
-deploy/         Docker Compose, Langfuse, Railway image, systemd units
+deploy/         Docker Compose, Langfuse, Railway image, systemd units, engine launchers
 evals/          traps, test sentences, retrieval cases
 ```

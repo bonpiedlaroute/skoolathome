@@ -13,6 +13,7 @@ from nostr_sdk import Event
 
 from skoolathome import secrets
 from skoolathome.publish.nip46 import NIP98_KIND, authorization_header, nip98_tags
+from skoolathome.schema.explanation import ExplanationAnswer
 from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
 from skoolathome.schema.request import RequestUpdate
 from skoolathome.schema.review import WeeklyReview
@@ -88,6 +89,13 @@ class ApiClient:
     def pairing_code(self, role: str, label: str) -> dict:
         """A code to pair a new device: {code, url, expires_in_minutes, qr_svg}."""
         return self._call("POST", "/api/agent/pairing-tokens", {"role": role, "label": label})
+
+    def pending_explanations(self) -> list[dict]:
+        """« Je n'ai pas compris » waiting for this laptop (T29)."""
+        return self._call("GET", "/api/agent/explanations")
+
+    def answer_explanation(self, explanation_id: str, answer: ExplanationAnswer) -> dict:
+        return self._call("POST", f"/api/agent/explanations/{explanation_id}", answer.model_dump(mode="json"))
 
     def report(self, report: dict) -> dict:
         """The end-of-evening report: stored online and pushed to the parent devices."""

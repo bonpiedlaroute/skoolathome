@@ -273,6 +273,9 @@ class InstructionState(TypedDict, total=False):
     rule_id: str
     rule_version: int
     reason: str
+    agent_rule: dict | None  # a rule the agent proposes from what it saw (T28): no model, straight to the pause
+    facts: list[str]
+    proposal_key: str
 
 
 Connect = Callable[[], psycopg.Connection]
@@ -298,6 +301,12 @@ def build(models: Any, connect: Connect, conf: config.Config | None = None) -> S
     def interpret(state: InstructionState) -> dict:
         if state.get("form_rule"):
             return {"proposal": state["form_rule"], "decision": {"kind": "approve"}, "question": ""}
+        if state.get("agent_rule") and not state.get("exchanges"):
+            # The graph of proposals (§9.3): drafted by the code, from facts. A correction in words
+            # (« plutôt à l'écrit ») goes through the model below, like an instruction.
+            rule = Rule.model_validate(state["agent_rule"])
+            return {"proposal": rule.model_dump(mode="json"), "question": "", "decision": None,
+                    "summary": ("L'agent propose : " + describe(rule))[:800]}
         today = date.fromisoformat(state["today"])
         with connect() as conn:
             known_ = known(conn, state.get("student_id"))
@@ -358,24 +367,37 @@ def build(models: Any, connect: Connect, conf: config.Config | None = None) -> S
         today = date.fromisoformat(state["today"])
         written = _sentence(state) or (chosen.get("origin") or {}).get("text", "")
         trace = tracing.trace_id("instruction", state["id"])
+        author = "agent" if state.get("agent_rule") else "parent"
         try:
             rule = Rule.model_validate({**chosen, "status": chosen.get("status", "active"),
-                                        "origin": {"text": written[:600], "author": "parent", "on": today.isoformat()}})
+                                        "origin": {"text": written[:600], "author": author, "on": today.isoformat()}})
         except ValidationError as error:
             return {"status": "failed", "reason": f"Règle invalide : {error.errors()[0]['msg']}"[:600]}
         with connect() as conn:
             saved = rules_store.save(conn, rule)
-            if edited and state.get("proposal") and not state.get("form_rule"):
+            if edited and state.get("proposal") and not state.get("form_rule") and not state.get("agent_rule"):
                 store.correction(conn, state["id"], written, state["proposal"], saved.model_dump(mode="json"))
-        if not state.get("form_rule"):
+            if state.get("proposal_key"):
+                from skoolathome.agent import proposals  # the decision on a proposal (T28)
+
+                proposals.decided(conn, state["proposal_key"], "edited" if edited else "accepted",
+                                  final=saved.model_dump(mode="json"))
+        if not state.get("form_rule") and not state.get("agent_rule"):
             tracing.score(trace, "instruction.accepted", not edited, "modifiée par le parent" if edited else "validée")
             tracing.score(trace, "instruction.questions", float(len(state.get("exchanges") or [])))
         return {"status": "saved", "rule_id": saved.id, "rule_version": saved.version,
                 "summary": ("Règle enregistrée : " + describe(saved, state.get("teachers")))[:800]}
 
     def discard(state: InstructionState) -> dict:
-        tracing.score(tracing.trace_id("instruction", state["id"]), "instruction.accepted", False, "annulée")
-        return {"status": "rejected"}
+        reason = ((state.get("decision") or {}).get("text") or "").strip()
+        if state.get("proposal_key"):
+            from skoolathome.agent import proposals
+
+            with connect() as conn:  # never proposed again
+                proposals.decided(conn, state["proposal_key"], "rejected", reason=reason)
+        else:
+            tracing.score(tracing.trace_id("instruction", state["id"]), "instruction.accepted", False, "annulée")
+        return {"status": "rejected", "reason": reason[:600]}
 
     graph = StateGraph(InstructionState)
     for name, function in [("interpret", interpret), ("clarify", clarify), ("propose", propose),
@@ -442,6 +464,8 @@ class Runner:
             self.graph.invoke(None, config_)  # an earlier run stopped half-way
         elif not snapshot.values:
             self.graph.invoke({"id": instruction["id"], "text": instruction["text"], "form_rule": instruction["form_rule"],
+                               "agent_rule": instruction.get("agent_rule"), "facts": instruction.get("facts") or [],
+                               "proposal_key": instruction.get("proposal_key") or "",
                                "student_id": student_id, "today": today.isoformat(), "exchanges": []}, config_)
         return self.step(instruction["id"])
 
@@ -464,14 +488,18 @@ def runner(database_url: str, models: Any, conf: config.Config | None = None) ->
 
 
 def process(database_url: str, models: Any, student_id: str | None, today: date,
-            conf: config.Config | None = None, progress: Callable[[str], None] | None = None) -> dict:
+            conf: config.Config | None = None, progress: Callable[[str], None] | None = None,
+            only_agent: bool = False) -> dict:
     """Every new instruction, and every reply of the parent: the graph runs until its next pause.
-    An instruction that fails (model stopped) stays where it was, for the next run."""
+    An instruction that fails (model stopped) stays where it was, for the next run. `only_agent`:
+    the agent's new proposals only, which need no model (`proposals run`)."""
     say = progress or (lambda message: None)
     done: list[dict] = []
     errors: list[str] = []
     with psycopg.connect(database_url, autocommit=True) as conn, runner(database_url, models, conf) as run_:
         for instruction in store.new(conn):
+            if only_agent and instruction["origin"] != "agent":
+                continue
             say(f"Consigne {instruction['id']} : lecture…")
             try:
                 step = run_.start(instruction, student_id, today)
@@ -480,7 +508,7 @@ def process(database_url: str, models: Any, student_id: str | None, today: date,
                 continue
             step.save(conn, instruction["id"])
             done.append({"id": instruction["id"], "status": step.status})
-        for instruction in store.with_replies(conn):
+        for instruction in [] if only_agent else store.with_replies(conn):
             while (reply := store.next_reply(conn, instruction["id"])) is not None:
                 if not run_.waiting(instruction["id"]):
                     store.handled(conn, reply["id"])  # nothing to answer: a duplicate, or already finished

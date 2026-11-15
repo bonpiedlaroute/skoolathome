@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 import psycopg
 
+from skoolathome.collectors.ecoledirecte import attachments
 from skoolathome.collectors.ecoledirecte.client import API_VERSION, EcoleDirecteError, TwoFactorRequired
 from skoolathome.collectors.ecoledirecte.source import (
     AccessRefused,
@@ -47,6 +49,7 @@ def collect(
     student_id: int | None = None,
     today: date | None = None,
     pause: float = 1.0,
+    attachments_root: Path = attachments.ROOT,
 ) -> RunResult:
     """`conn` must be in autocommit mode: the run log is written even if saving fails."""
     today = today or date.today()
@@ -67,8 +70,14 @@ def collect(
         snapshot = source.fetch(start, end)
         with conn.transaction():
             result.counts = school.save_snapshot(conn, snapshot)
+            attachments.register(conn, snapshot)
         result.errors = source.errors
         result.status = "partial" if source.errors else "ok"
+        if hasattr(client, "download"):  # in the same session: no second login (T25)
+            downloaded = attachments.download_pending(conn, client, result.student_id, root=attachments_root,
+                                                      pause=pause)
+            result.counts["attachments"] = {**attachments.counts(conn, result.student_id), "new": downloaded,
+                                            "unsupported_formats": attachments.unsupported_formats(conn, result.student_id)}
     except TwoFactorRequired:
         result.status = "two_factor_required"
         result.errors = [{"kind": "login", "ref": "", "error": "two-factor authentication required"}]

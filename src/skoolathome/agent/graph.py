@@ -39,6 +39,7 @@ from rapidfuzz import fuzz
 from skoolathome.agent import (
     config,
     draft,
+    explain,
     formats,
     guards,
     instructions,
@@ -53,6 +54,8 @@ from skoolathome.agent import (
 from skoolathome.agent.checkpoints import checkpointer
 from skoolathome.agent.embeddings import EmbeddingError
 from skoolathome.agent.llm import ModelError
+from skoolathome.collectors.ecoledirecte.attachments import AttachmentSource, lesson_pages
+from skoolathome.evaluation.cases import retrieval_cases
 from skoolathome.evaluation import weekly
 from skoolathome.material import index, search
 from skoolathome.rules import assessments
@@ -222,12 +225,28 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         return update
 
     def index_documents(state: EveningState) -> dict:
-        """New or changed files of the drop folder are indexed (T18)."""
-        if services.material is None or services.embedder is None:
+        """New or changed files of the drop folder (T18) and the teachers' attachments (T25) are
+        indexed. An attachment is indexed even without the embedding model: it is read with its
+        lesson, no search needed."""
+        with connect() as conn:
+            attached = conn.execute("SELECT EXISTS (SELECT 1 FROM school.attachments WHERE status = 'downloaded')"
+                                    ).fetchone()[0]
+        manual = services.material is not None and services.embedder is not None
+        if not manual and not attached:
             return {"documents": {"skipped": True}}
         with step("index_documents", state) as span, connect() as conn:
-            say("Documents du dépôt : indexation…")
-            result = index.sync(conn, services.material, services.embedder).as_json()
+            say("Documents (dépôt et pièces jointes) : indexation…")
+            result = index.IndexReport()
+            for source in ([services.material] if manual else []) + ([AttachmentSource(conn)] if attached else []):
+                found = index.sync(conn, source, services.embedder)
+                result.indexed += found.indexed
+                result.unchanged += found.unchanged
+                result.failed += found.failed
+                result.unsupported += found.unsupported
+                result.removed += found.removed
+            result = result.as_json()
+            if attached and state.get("student_id"):
+                result["retrieval_cases"] = retrieval_cases(conn, state["student_id"])  # free test cases (T31)
             output(span, result, warning=bool(result["failed"]))
         say(f"Documents : {len(result['indexed'])} indexé(s), {result['unchanged']} inchangé(s)"
             + (f", {len(result['failed'])} en échec" if result["failed"] else ""))
@@ -250,6 +269,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                 result = {"error": str(error)[:300]}
             try:
                 with connect() as conn:  # on each sheet's trace, with what an earlier evening could not send
+                    result["unhelpful_cases"] = explain.unhelpful_cases(conn)  # « Toujours pas » (T29)
                     result["scores"] = scores.send(conn)
             except Exception as error:  # noqa: BLE001  (Langfuse stopped: sent another evening)
                 result["scores"] = {"error": str(error)[:200]}
@@ -459,7 +479,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         with node("generate", state, prompt=prompt.client, input={"attempt": attempt},
                   metadata={f"prompt.{shape.prompt}": prompt.label}) as span:
             written = making.write(models, prompt, task, state["sources"], state.get("labels") or {},
-                                   _context(task, state["sources"], state.get("overview", "")),
+                                   _context(task, state["sources"], state.get("overview", ""), state.get("labels")),
                                    state.get("failures") or [], state["trace_id"])
             sheet = written.sheet
             if sheet is None:
@@ -766,9 +786,18 @@ def _sources(conn: psycopg.Connection, student_id: str, task: dict) -> tuple[dic
         budget -= len(kept[lesson.key])
     sources = {lesson.key: kept[lesson.key] for lesson in sorted(found, key=lambda l: l.day) if lesson.key in kept}
     labels = {lesson.key: f"ton cours du {fr_day(lesson.day)}" for lesson in found if lesson.key in kept}
+    # The teacher's own document, attached to the lesson in École Directe (T25), before any search.
+    for key, label_, _, page_text in lesson_pages(conn, student_id, task["lessons"]):
+        if budget < 300:
+            break
+        text = page_text[:min(PAGE_CHARS, budget)]
+        sources[key], labels[key] = text, label_
+        budget -= len(text)
     for page in task.get("pages", []):
         if budget < 300:
             break
+        if page["key"] in sources:
+            continue  # already there, as the teacher's attachment
         text = search.page_text(conn, page["document_id"], page["page"])[:min(PAGE_CHARS, budget)]
         if text.strip():
             sources[page["key"]], labels[page["key"]] = text, page["label"]
@@ -794,7 +823,7 @@ def _overview(conn: psycopg.Connection, student_id: str, task: dict) -> str:
     return "\n".join(lines)
 
 
-def _context(task: dict, sources: dict[str, str], overview: str = "") -> str:
+def _context(task: dict, sources: dict[str, str], overview: str = "", labels: dict[str, str] | None = None) -> str:
     """What the code tells the model about this task, beyond the format's own prompt."""
     lines = []
     test = task.get("test")
@@ -820,7 +849,11 @@ def _context(task: dict, sources: dict[str, str], overview: str = "") -> str:
     if task.get("style") == "oral_quiz":
         lines.append("Style : comme une interrogation orale en début de cours, questions directes, "
                      "réponses de quelques mots.")
-    if any(key.startswith("doc:") for key in sources):
+    attached = [key for key, name in (labels or {}).items() if name.startswith("le document du prof")]
+    if attached:
+        lines.append("Le prof a joint son document à la séance (sources " + ", ".join(f"[{k}]" for k in attached[:4])
+                     + ") : c'est son cours, une source aussi sûre que la séance. Appuie-toi dessus.")
+    if any(key.startswith("doc:") and key not in attached for key in sources):
         lines.append("Des pages de documents sont jointes (sources [doc:…]) : elles complètent la séance."
                      + (" En mathématiques, n'en reprends pas les nombres : seulement la notion et la méthode."
                         if task["computational"] else ""))
@@ -842,7 +875,7 @@ def _model_input(outcome: Outcome) -> dict:
     """What the model read: a real case of the reference set replays exactly that (T23)."""
     sources = outcome.get("sources") or {}
     return {"task": outcome["task"], "sources": sources, "labels": outcome.get("labels") or {},
-            "context": _context(outcome["task"], sources, outcome.get("overview", ""))}
+            "context": _context(outcome["task"], sources, outcome.get("overview", ""), outcome.get("labels"))}
 
 
 def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:

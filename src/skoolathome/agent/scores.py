@@ -12,6 +12,7 @@ id: sent twice after a crash, it is counted once.
     feedback.solo_score      a sheet finished alone: share of questions right
     parent.item_ok           the weekly annotation (T24): the question is right and useful, for the parent
     judge.agreement          the judge said the same thing as the parent about that question (T24, T33)
+    explanation.helped       « Ça m'a aidé ? » after « Je n'ai pas compris » (T29), on the explanation's trace
 """
 
 from __future__ import annotations
@@ -94,6 +95,7 @@ def pending(conn: psycopg.Connection, limit: int = 5000) -> tuple[list[Score], i
                                f"{score}/{total}, {len(to_review or [])} à voir ensemble",
                                {**_context(row[6:]), "role": role}))
     found += _annotations(conn, limit)
+    found += _explanations(conn, limit)
     untraced = [s for s in found if not s.trace_id]
     return [s for s in found if s.trace_id], len(untraced)
 
@@ -120,6 +122,24 @@ def _annotations(conn: psycopg.Connection, limit: int) -> list[Score]:
     return found
 
 
+def _explanations(conn: psycopg.Connection, limit: int) -> list[Score]:
+    """« Ça m'a aidé ? » after « Je n'ai pas compris » (T29), on the explanation's own trace."""
+    if conn.execute("SELECT to_regclass('agent.explanations')").fetchone()[0] is None:
+        return []
+    rows = conn.execute(
+        f"SELECT e.id, e.trace_id, e.item_id, e.helped, e.question, {_CONTEXT} FROM agent.explanations e "
+        "LEFT JOIN agent.sheets s ON s.id = e.sheet_id WHERE e.helped IS NOT NULL AND e.sent_to_langfuse_at IS NULL "
+        "ORDER BY e.helped_at LIMIT %s", (limit,),
+    ).fetchall()
+    return [Score("explanations", r[0], r[1], "explanation.helped", bool(r[3]),
+                  f"{r[2]} : {'ça a aidé' if r[3] else 'toujours pas'}" + (f" ({r[4][:80]})" if r[4] else ""),
+                  {**_context(r[5:]), "item": r[2]}) for r in rows]
+
+
+TABLES = {"attempts": "feedback.attempts", "reports": "feedback.reports", "finishes": "feedback.finishes",
+          "annotations": "feedback.annotations", "explanations": "agent.explanations"}
+
+
 def send(conn: psycopg.Connection) -> dict:
     """Send what is waiting, then mark it sent. Without Langfuse, nothing is marked: it waits."""
     if tracing.client() is None:
@@ -132,6 +152,6 @@ def send(conn: psycopg.Connection) -> dict:
         sent.setdefault(score.table, set()).add(score.row_id)
     tracing.flush()
     for table, ids in sent.items():
-        key = "id::text" if table != "finishes" else "id"
-        conn.execute(f"UPDATE feedback.{table} SET sent_to_langfuse_at = now() WHERE {key} = ANY(%s)", (list(ids),))
+        key = "id" if table in ("finishes", "explanations") else "id::text"
+        conn.execute(f"UPDATE {TABLES[table]} SET sent_to_langfuse_at = now() WHERE {key} = ANY(%s)", (list(ids),))
     return {**{table: len(ids) for table, ids in sent.items()}, "untraced": untraced}

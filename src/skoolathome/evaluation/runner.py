@@ -68,6 +68,7 @@ def evaluate(conn: psycopg.Connection, family: str, label: str, models: Any, *, 
         raise LookupError(f"aucun cas « {FAMILY_NAMES[family]} » : skoolathome eval sync charge les pièges")
     loaded = {name: prompts.get(name, label) for name in prompts_of(family)}
     settings = configuration(family, label, conf)
+    started = datetime.now().astimezone()  # minutes per sheet, for the engine comparison (T30)
 
     def task(case_input: dict) -> dict:
         if family == "tests":
@@ -118,9 +119,10 @@ def evaluate(conn: psycopg.Connection, family: str, label: str, models: Any, *, 
     metrics = aggregate([r["measures"] for r in results])
     run = Run(None, family, label, settings, metrics, results, not failed_thresholds(metrics), experiment)
     run.id = conn.execute(
-        "INSERT INTO agent.eval_runs (family, label, config, finished_at, cases, metrics, results, passed, experiment) "
-        "VALUES (%s, %s, %s, now(), %s, %s, %s, %s, %s) RETURNING id",
-        (family, label, Jsonb(settings), len(results), Jsonb(metrics), Jsonb(results), run.passed, experiment),
+        "INSERT INTO agent.eval_runs (family, label, config, started_at, finished_at, cases, metrics, results, passed, "
+        "experiment) VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s) RETURNING id",
+        (family, label, Jsonb(settings), started, len(results), Jsonb(metrics), Jsonb(results), run.passed,
+         experiment),
     ).fetchone()[0]
     return run
 
@@ -143,11 +145,16 @@ def _result(case: cases.Case, output: dict, measures: dict, trace_id: str | None
     return {"case": case.id, "origin": case.origin, "measures": measures, "output": kept, "trace_id": trace_id}
 
 
-def latest(conn: psycopg.Connection, family: str, label: str) -> Run | None:
+def latest(conn: psycopg.Connection, family: str, label: str, like: dict | None = None) -> Run | None:
+    """The latest run; with `like`, the latest one with the same engine and models (a candidate
+    prompt is compared with production on the same engine, T30)."""
+    same = like or {}
     row = conn.execute(
         "SELECT id, family, label, config, metrics, results, passed, experiment, finished_at FROM agent.eval_runs "
-        "WHERE family = %s AND label = %s AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
-        (family, label),
+        "WHERE family = %s AND label = %s AND finished_at IS NOT NULL "
+        "AND (%s::text IS NULL OR (config->>'engine' = %s AND config->>'generator' = %s AND config->>'judge' = %s)) "
+        "ORDER BY finished_at DESC LIMIT 1",
+        (family, label, same.get("engine"), same.get("engine"), same.get("generator"), same.get("judge")),
     ).fetchone()
     return Run(*row) if row else None
 

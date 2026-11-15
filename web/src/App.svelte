@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
 
   import Devices from "./components/Devices.svelte";
+  import ExplanationView from "./components/ExplanationView.svelte";
   import Home from "./components/Home.svelte";
   import Instructions from "./components/Instructions.svelte";
   import Pair from "./components/Pair.svelte";
@@ -28,6 +29,9 @@
     const match = /^\/review(?:\/(\d{4}-W\d{2}))?$/.exec(route);
     return match ? (match[1] ?? "latest") : null;
   });
+
+  // #/explanation/<id>, from the « explication prête » notification (T29)
+  const explanationId = $derived(/^\/explanation\/([^/]+)$/.exec(route)?.[1] ?? null);
 
   const go = (path: string) => (location.hash = path);
   const sheetPath = (id: string, view = "") => `/sheet/${encodeURIComponent(id)}${view ? `/${view}` : ""}`;
@@ -101,6 +105,10 @@
       onexit={() => go("/")}
       onprint={() => go(sheetPath(sheetRoute.id, "print"))}
     />
+  {/key}
+{:else if explanationId}
+  {#key explanationId}
+    <ExplanationView id={decodeURIComponent(explanationId)} onexit={() => go("/")} onsheet={(sheetId) => go(sheetPath(sheetId))} />
   {/key}
 {:else if route === "/devices" && device.role === "parent"}
   <Devices onexit={() => go("/")} />

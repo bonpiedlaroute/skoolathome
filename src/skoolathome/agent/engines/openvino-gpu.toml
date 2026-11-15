@@ -1,0 +1,34 @@
+# OpenVINO Model Server on the Intel iGPU (T30). NOT VERIFIED: see tmp/T30-comparaison-moteurs.md.
+# The models are converted to OpenVINO in INT4: not the same quantization as Q4_K_M, the
+# comparison says so. Start:  deploy/engines/openvino.sh start gpu
+# Then:  SKOOLATHOME_MODELS=src/skoolathome/agent/engines/openvino-gpu.toml uv run skoolathome llm bench --save
+
+[engine]
+name = "openvino-gpu"
+base_url = "http://127.0.0.1:8000/v3"
+native_url = ""
+timeout_seconds = 1500
+
+[generator]
+model = "ministral-3-8b-instruct-int4"
+family = "mistral"
+quantization = "INT4"
+temperature = 0.3
+max_tokens = 4096
+base_url = "http://127.0.0.1:8000/v3"
+
+[judge]
+model = "qwen3.5-4b-int4"
+family = "qwen"
+quantization = "INT4"
+temperature = 0.0
+max_tokens = 1024
+base_url = "http://127.0.0.1:8001/v3"
+
+[embedder]
+model = "bge-m3"
+family = "bge"
+quantization = "F16"
+dimensions = 1024
+base_url = "http://127.0.0.1:11434/v1"
+engine = "ollama"

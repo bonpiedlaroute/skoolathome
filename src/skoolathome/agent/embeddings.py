@@ -29,7 +29,7 @@ class LocalEmbedder:
         model = conf.model("embedder")
         self.model = model.model
         self.dimensions = model.dimensions
-        self.http = httpx.Client(base_url=conf.engine.base_url, timeout=conf.engine.timeout_seconds)
+        self.http = httpx.Client(base_url=model.url(conf.engine), timeout=conf.engine.timeout_seconds)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
