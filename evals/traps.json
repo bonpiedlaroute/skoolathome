@@ -1,0 +1,92 @@
+{
+  "note": "T23: traps of the reference set, written by hand (no real data). skoolathome eval sync loads them; edit them here.",
+  "cases": [
+    {
+      "id": "trap-empty-lesson",
+      "family": "sheets",
+      "note": "contenu vide : la séance n'a rien de saisi",
+      "input": {
+        "task": {"id": "trap-empty-lesson", "kind": "exercises", "subject": "Mathématiques", "subject_code": "MATHS",
+                 "target_minutes": 8, "computational": true, "visible_from": "2026-01-06"},
+        "sources": {"lesson:2026-01-05:MATHS": ""},
+        "labels": {"lesson:2026-01-05:MATHS": "ton cours du lundi 5/1"},
+        "context": ""
+      },
+      "expected": {"abstain": true}
+    },
+    {
+      "id": "trap-too-short",
+      "family": "sheets",
+      "note": "contenu vide : une ligne de consigne, rien à apprendre",
+      "input": {
+        "task": {"id": "trap-too-short", "kind": "exercises", "subject": "Physique-chimie", "subject_code": "PH-CH",
+                 "target_minutes": 8, "computational": false, "visible_from": "2026-01-06"},
+        "sources": {"lesson:2026-01-05:PH-CH": "Finir les exercices 15 à 22 du chapitre."},
+        "labels": {"lesson:2026-01-05:PH-CH": "ton cours du lundi 5/1"},
+        "context": ""
+      },
+      "expected": {"abstain": true}
+    },
+    {
+      "id": "trap-ambiguous-homework",
+      "family": "sheets",
+      "note": "devoir ambigu : la séance ne contient que des consignes, aucune notion à réviser",
+      "input": {
+        "task": {"id": "trap-ambiguous-homework", "kind": "exercises", "subject": "Français", "subject_code": "FRANC",
+                 "target_minutes": 8, "computational": false, "visible_from": "2026-01-06"},
+        "sources": {"lesson:2026-01-05:FRANC": "Pour la prochaine fois : revoir ce qu'on a fait en classe, terminer le travail commencé, apporter le livre et le cahier de brouillon, et faire signer le carnet de liaison. On en reparlera au prochain cours."},
+        "labels": {"lesson:2026-01-05:FRANC": "ton cours du lundi 5/1"},
+        "context": ""
+      },
+      "expected": {"abstain": true}
+    },
+    {
+      "id": "trap-off-topic-page",
+      "family": "sheets",
+      "note": "page hors sujet : la recherche a joint une page sans rapport avec la séance",
+      "input": {
+        "task": {"id": "trap-off-topic-page", "kind": "exercises", "subject": "Mathématiques", "subject_code": "MATHS",
+                 "target_minutes": 8, "computational": true, "visible_from": "2026-01-06"},
+        "sources": {
+          "lesson:2026-01-05:MATHS": "Fractions égales : on ne change pas la valeur d'une fraction quand on multiplie ou qu'on divise le numérateur et le dénominateur par un même nombre non nul. Exemple : 3/4 = 6/8 = 9/12. Simplifier une fraction, c'est diviser le numérateur et le dénominateur par un même nombre. Une fraction est irréductible quand on ne peut plus la simplifier.",
+          "doc:999:p42": "Les volcans. Un volcan est une ouverture de la croûte terrestre par laquelle le magma remonte à la surface. On distingue les éruptions effusives, avec des coulées de lave fluide, et les éruptions explosives, avec des nuées ardentes."
+        },
+        "labels": {"lesson:2026-01-05:MATHS": "ton cours du lundi 5/1", "doc:999:p42": "ton manuel p. 42"},
+        "context": "Des pages de documents sont jointes (sources [doc:…]) : elles complètent la séance. En mathématiques, n'en reprends pas les nombres : seulement la notion et la méthode."
+      },
+      "expected": {"abstain": false, "must_not_cite": ["doc:999:p42"]}
+    },
+    {
+      "id": "trap-test-announced",
+      "family": "tests",
+      "note": "contrôle annoncé avec le mot",
+      "input": {"subject": "Mathématiques", "text": "Interrogation écrite sur les fractions égales.", "flagged": false,
+                "given_on": "2026-01-05", "due_on": "2026-01-08"},
+      "expected": {"is_assessment": true}
+    },
+    {
+      "id": "trap-test-hidden",
+      "family": "tests",
+      "note": "devoir ambigu : une évaluation annoncée sans le mot",
+      "input": {"subject": "Français", "text": "Savoir réciter la poésie par cœur, je passerai dans les rangs.",
+                "flagged": false, "given_on": "2026-01-05", "due_on": "2026-01-09"},
+      "expected": {"is_assessment": true}
+    },
+    {
+      "id": "trap-test-qcm",
+      "family": "tests",
+      "note": "devoir ambigu : un QCM noté",
+      "input": {"subject": "Histoire-géographie", "text": "QCM au prochain cours sur la leçon 4.", "flagged": false,
+                "given_on": "2026-01-05", "due_on": "2026-01-08"},
+      "expected": {"is_assessment": true}
+    },
+    {
+      "id": "trap-not-a-test",
+      "family": "tests",
+      "note": "un devoir ordinaire : pas de contrôle (ne compte pas dans le rappel)",
+      "input": {"subject": "Mathématiques", "text": "Faire les exercices 4 et 5 page 52.", "flagged": false,
+                "given_on": "2026-01-05", "due_on": "2026-01-08"},
+      "expected": {"is_assessment": false}
+    }
+  ]
+}

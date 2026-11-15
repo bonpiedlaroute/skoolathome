@@ -12,7 +12,7 @@ from skoolathome.rules import assessments, inputs, store
 from skoolathome.schema.rule import PRIORITY_DEFAULT, PRIORITY_PARENT, PRIORITY_REVISION, Origin, Rule
 from skoolathome.store import feedback
 
-STUDENT = "3030"
+STUDENT = "4242"
 
 
 def test_a_rule_says_what_it_needs():
@@ -140,8 +140,9 @@ def test_feedback_is_kept_once_with_the_trace_of_its_sheet(conn):
                                                                 "quote": {"source_id": "lesson:2026-11-12:MATHS"}}]})),
     )
     assert feedback.cursor(conn) == 0
-    assert feedback.save(conn, FEEDBACK) == {"attempts": 1, "reports": 1, "finishes": 1, "requests": 0}
-    assert feedback.save(conn, FEEDBACK) == {"attempts": 0, "reports": 0, "finishes": 0, "requests": 0}
+    first = feedback.save(conn, FEEDBACK)
+    assert {kind: count for kind, count in first.items() if count} == {"attempts": 1, "reports": 1, "finishes": 1}
+    assert not any(feedback.save(conn, FEEDBACK).values())
     assert feedback.cursor(conn) == 1_000
     assert conn.execute("SELECT trace_id, item_id FROM feedback.attempts").fetchone() == ("trace-s1", "q1")
     # The missed question comes back as a concept to work on (T20).

@@ -1,0 +1,45 @@
+{
+  "note": "T21: ten parent sentences and the rule expected. Only the fields given are compared. skoolathome instructions eval",
+  "cases": [
+    {
+      "sentence": "Le prof d'histoire interroge à chaque cours sur le cours précédent, et c'est noté.",
+      "expected": {"subject": "HI-GE", "trigger": "before_each_lesson", "scope": "previous_lesson", "format": "quick_quiz"}
+    },
+    {
+      "sentence": "En anglais, elle fait réciter le vocabulaire de la leçon au début de chaque cours.",
+      "expected": {"subject": "AGL1", "trigger": "before_each_lesson", "scope": "previous_lesson"}
+    },
+    {
+      "sentence": "Pour les contrôles de maths, commence les révisions une semaine avant.",
+      "expected": {"subject": "MATHS", "trigger": "before_test", "offsets_contains": 7}
+    },
+    {
+      "sentence": "Pas plus de 30 minutes de fiches par soir.",
+      "expected": {"trigger": "load_limit", "max_minutes": 30}
+    },
+    {
+      "sentence": "Après chaque cours de SVT, fais-lui un cours en clair de la séance.",
+      "expected": {"subject": "SVT", "trigger": "after_each_lesson", "scope": "this_lesson", "format": "lesson_recap"}
+    },
+    {
+      "sentence": "En français, la veille de chaque cours, une révision des trois derniers cours.",
+      "expected": {"subject": "FRANC", "trigger": "before_each_lesson", "scope": "last_n_lessons", "n_lessons": 3}
+    },
+    {
+      "sentence": "Les exercices de maths du soir, c'est 8 questions.",
+      "expected": {"subject": "MATHS", "trigger": "after_each_lesson", "format": "exercises", "items": 8}
+    },
+    {
+      "sentence": "En physique-chimie, une interro flash la veille de chaque cours, à faire avec moi.",
+      "expected": {"subject": "PH-CH", "trigger": "before_each_lesson", "format": "quick_quiz", "suggested_mode": "together"}
+    },
+    {
+      "sentence": "Il interroge à l'oral à chaque fois.",
+      "expected": {"question": true}
+    },
+    {
+      "sentence": "Il a du mal en ce moment, il faudrait l'aider davantage.",
+      "expected": {"question": true}
+    }
+  ]
+}

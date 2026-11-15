@@ -55,6 +55,7 @@ export interface Sheet {
   visible_from: string;
   due_by?: string | null;
   estimated_minutes: number;
+  trace_id?: string | null; // the generation's trace in Langfuse: sent back with each answer (T22)
   recap?: Recap | null;
   items: Item[];
 }
@@ -82,6 +83,55 @@ export interface Device {
   is_this_device?: boolean;
 }
 
+/** A rule of the agent (src/skoolathome/schema/rule.py). The laptop validates it again. */
+export interface RuleBody {
+  id: string;
+  version?: number;
+  status?: "proposed" | "active" | "archived";
+  subject?: string | null;
+  teacher?: string | null;
+  trigger: string;
+  when?: string;
+  scope?: string;
+  format?: string;
+  style?: string;
+  suggested_mode?: "solo" | "together";
+  target_minutes?: number;
+  items?: number | null;
+  replaces_default?: boolean;
+  offsets_days?: number[];
+  n_lessons?: number;
+  max_minutes?: number | null;
+  origin?: { text: string; author: string; on: string | null };
+}
+
+export type InstructionStatus = "pending" | "question" | "proposed" | "saved" | "rejected" | "failed";
+export type InstructionReplyKind = "answer" | "approve" | "edit" | "reject";
+
+/** An instruction in plain French (or a rule from the form), and what the agent made of it. */
+export interface Instruction {
+  id: string;
+  text: string;
+  rule: RuleBody | null;
+  created_at: string;
+  status: InstructionStatus;
+  question: string;
+  summary: string; // « J'ai compris : … », written by the laptop
+  proposal: RuleBody | null;
+  rule_id: string | null;
+  rule_version: number | null;
+  reason: string;
+  waiting: boolean; // replied: the laptop has not read it yet
+}
+
+export interface PublishedRule {
+  id: string;
+  version: number;
+  status: string;
+  summary: string;
+  body: RuleBody;
+}
+
 export type RequestKind = "revision" | "extra";
 
 /** A sheet asked for by the parent, made at the laptop's next run. */
@@ -95,4 +145,34 @@ export interface SheetRequest {
   status: "pending" | "done" | "abstained";
   sheet_id: string | null;
   reason: string;
+}
+
+/** The weekly review (T24): indicators, alerts first, and the sheets to annotate. */
+export interface Indicator {
+  name: string;
+  label: string;
+  value: string;
+  alert: boolean;
+  detail: string;
+}
+
+export interface WeeklyReview {
+  week: string; // 2026-W46
+  start: string;
+  end: string;
+  title: string;
+  body: string;
+  indicators: Indicator[];
+  to_annotate: { id: string; subject: string; title: string }[];
+  annotated: string[]; // sheets already annotated
+}
+
+/** What the parent can say is wrong with a question: the judge's criteria. */
+export type Problem = "faithful" | "answer_correct" | "level_ok" | "useful";
+
+export interface ItemAnnotation {
+  item_id: string;
+  ok: boolean;
+  problem?: Problem | null;
+  comment?: string;
 }

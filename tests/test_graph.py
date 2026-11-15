@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 
 from skoolathome.agent import graph
 from skoolathome.agent.draft import AssessmentVerdict, DraftQuiz, DraftRecap, DraftSheet
+from skoolathome.agent.instructions import Interpretation, RuleDraft
 from skoolathome.agent.judge import ItemVerdict, Verdict
 from skoolathome.agent.llm import ModelError
 from skoolathome.collectors.manual.source import ManualSource
@@ -32,6 +33,9 @@ FRENCH_GOOD = DraftSheet.model_validate({"title": "Yvain", "items": [item(
     prompt="Qui a écrit Yvain ou le Chevalier au lion ?", answer="Chrétien de Troyes", variants=[],
     quote="Yvain ou le Chevalier au lion est un roman de Chrétien de Troyes", concept="Yvain")]})
 QUIZ = DraftQuiz.model_validate({"title": "Interro flash", "items": [item(), CHOICE, item(), CHOICE, item()]})
+INTERPRETATION = Interpretation(clear=True, question="", rule=RuleDraft(
+    subject="MATHS", teacher="", trigger="before_each_lesson", scope="previous_lesson", format="quick_quiz", oral=True,
+    together=True, target_minutes=0, items=0, replaces_default=False, offsets_days=[], n_lessons=0, max_minutes=0))
 APPROVED = Verdict(items=[], recap_faithful=True)
 REJECTED = Verdict(items=[ItemVerdict(id="q1", faithful=False, answer_correct=True, level_ok=True, useful=True,
                                       problem="la question parle d'autre chose que la citation")], recap_faithful=True)
@@ -64,6 +68,9 @@ class FakeModels:
         return reply
 
     def structured(self, role, messages, schema, callbacks):
+        if schema is Interpretation:
+            self.log.append((role, "Interpretation", ""))
+            return INTERPRETATION
         subject = next(line.removeprefix("Matière : ") for line in messages[-1]["content"].splitlines()
                        if line.startswith("Matière : "))
         self.log.append((role, schema.__name__, subject))
@@ -95,6 +102,9 @@ class FakeApi:
         self.cursors: list[int] = []
         self.published: list[str] = []
         self.answered: list[dict] = []
+        self.instructions: list[dict] = []
+        self.rules: list[str] = []
+        self.reviews: list = []
         self.reports: list[dict] = []
 
     @contextmanager
@@ -106,11 +116,16 @@ class FakeApi:
         self.cursors.append(since)
         return self.data
 
-    def publish(self, sheets, requests=None) -> list[str]:
+    def publish(self, sheets, requests=None, *, instructions=None, rules=None, review=None) -> list[str]:
         if self.publish_error:
             raise self.publish_error
+        if review is not None:
+            self.reviews.append(review)
         self.published += [s.id for s in sheets]
         self.answered += [r.model_dump() for r in requests or []]
+        self.instructions += [i.model_dump() for i in instructions or []]
+        if rules is not None:
+            self.rules = [r.id for r in rules]
         return [s.id for s in sheets]
 
     def report(self, report: dict) -> dict:
@@ -121,7 +136,7 @@ class FakeApi:
 def add_lesson(conn, source_id: str, subject_code: str, content: str, day: date = RUN) -> None:
     conn.execute(
         "INSERT INTO school.lessons (source, student_id, source_id, day, subject_code, subject, teacher, content, "
-        "is_empty, fingerprint) VALUES ('ecoledirecte', '3030', %s, %s, %s, %s, 'M. X', %s, %s, %s)",
+        "is_empty, fingerprint) VALUES ('ecoledirecte', '4242', %s, %s, %s, %s, 'M. X', %s, %s, %s)",
         (source_id, day, subject_code, subject_code, content, not content, f"fp-{source_id}-{len(content)}"),
     )
 
@@ -135,7 +150,7 @@ def run(url, models, *, api=None, collector=None, embedder=None, material=None, 
         **kwargs) -> graph.Evening:
     services = graph.Services(models=models, api=api, collector=collector, embedder=embedder, material=material,
                               progress=progress)
-    return graph.run(RUN, "3030", services, url, **kwargs)
+    return graph.run(RUN, "4242", services, url, **kwargs)
 
 
 def sheets(conn) -> dict[str, tuple]:
@@ -305,7 +320,7 @@ def test_a_missed_concept_comes_back_in_the_next_day_sheet(conn, url):
     add_lesson(conn, "m0", "MATHS", MATHS, day=date(2026, 11, 10))
     conn.execute(
         "INSERT INTO agent.sheets (id, run_date, task_id, student_id, subject_code, kind, status, body, attempts, "
-        "trace_id, model, prompt_version, release) VALUES ('old', '2026-11-10', 'old', '3030', 'MATHS', 'exercises', "
+        "trace_id, model, prompt_version, release) VALUES ('old', '2026-11-10', 'old', '4242', 'MATHS', 'exercises', "
         "'published', %s, 1, 'trace-old', 'm', 'v1', 'r')",
         (Jsonb({"subject": "Mathématiques", "items": [{"id": "q2", "concept": "nombres premiers",
                                                       "quote": {"source_id": "lesson:2026-11-10:MATHS"}}]}),),
@@ -329,7 +344,7 @@ def test_ambiguous_homework_read_by_the_model_brings_a_revision(conn, url):
     add_lesson(conn, "m1", "MATHS", MATHS)
     conn.execute(
         "INSERT INTO school.homework (source, student_id, source_id, subject_code, subject, given_on, due_on, text, "
-        "done, flagged_as_assessment, is_assessment, fingerprint) VALUES ('ecoledirecte', '3030', 'h1', 'MATHS', "
+        "done, flagged_as_assessment, is_assessment, fingerprint) VALUES ('ecoledirecte', '4242', 'h1', 'MATHS', "
         "'MATHEMATIQUES', '2026-11-13', '2026-11-16', 'il y a un qcm au prochain cours', false, false, 'no', 'fp-h1')")
     models = FakeModels(test=AssessmentVerdict(is_assessment=True, date="2026-11-16", scope="nombres premiers", confidence=0.8))
     evening = run(url, models)
@@ -370,7 +385,7 @@ def test_a_sheet_can_cite_the_manual_page_found_for_its_lesson(conn, url, tmp_pa
 def test_a_full_evening_collects_syncs_publishes_and_reports(conn, url):
     def collector() -> dict:
         add_lesson(conn, "m1", "MATHS", MATHS)  # what École Directe brought tonight
-        return {"status": "ok", "student_id": "3030", "counts": {}, "errors": []}
+        return {"status": "ok", "student_id": "4242", "counts": {}, "errors": []}
 
     api = FakeApi()
     evening = run(url, FakeModels(), api=api, collector=collector, publish=True)
@@ -485,7 +500,7 @@ def test_a_request_keeps_the_closest_lessons_and_sees_the_whole_subject(conn, ur
     add_lesson(conn, "m0", "MATHS", FRACTIONS, day=date(2026, 11, 9))
     add_lesson(conn, "m1", "MATHS", MATHS)  # the most recent, but on prime numbers
     request_id = requests_store.create(conn, NewRequest(subject="MATHS", kind="revision", focus="les fractions égales",
-                                                        items=4), student_id="3030")
+                                                        items=4), student_id="4242")
     models = FakeModels(maths=[ON_FRACTIONS])
     evening = run(url, models, only_requests=True)
     [result] = evening.results
@@ -517,3 +532,33 @@ def test_a_request_made_on_the_pwa_is_answered_in_the_batch(conn, url):
     assert answered["pwa-3d4e5f"]["status"] == "abstained" and "Rien en SVT" in answered["pwa-3d4e5f"]["reason"]
     assert conn.execute("SELECT count(*) FROM agent.requests WHERE reported_at IS NULL").fetchone()[0] == 0
     assert api.reports == []  # a requests-only run does not replace the evening's report
+
+
+# ------------------------------------------------------------- instructions (T21)
+
+
+def test_an_instruction_is_proposed_then_counts_the_evening_it_is_approved(conn, url):
+    add_lesson(conn, "m1", "MATHS", MATHS)
+    conn.execute(
+        "INSERT INTO school.timetable_slots (source, student_id, source_id, starts_at, ends_at, subject_code, subject, "
+        "teacher, room, kind, cancelled, fingerprint) VALUES ('ecoledirecte', '4242', 's1', '2026-11-16 09:00', "
+        "'2026-11-16 10:00', 'MATHS', 'MATHEMATIQUES', 'Mme ROUX A.', '101', 'COURS', false, 'fs1')")
+    empty = {"since": 0, "until": 5, "attempts": [], "reports": [], "finishes": []}
+    api = FakeApi(feedback={**empty, "instructions": [
+        {"id": "ins-1", "text": "Interro orale de maths à chaque cours.", "rule": None,
+         "created_at": "2026-11-13T17:00:00+00:00"}]})
+    models = FakeModels()
+    evening = run(url, models, api=api, publish=True)
+    [update] = api.instructions
+    assert update["status"] == "proposed" and update["summary"].startswith("J'ai compris : En Mathématiques")
+    assert "maths-before-quick-quiz" not in api.rules and "daily" in api.rules
+    assert "1 consigne à valider" in evening.report["body"]
+    assert not any(task.endswith("quick-quiz") for task, _ in statuses(evening))
+
+    api.data = {**empty, "since": 5, "until": 9, "instruction_replies": [
+        {"id": 1, "instruction_id": "ins-1", "kind": "approve", "text": "", "rule": None,
+         "created_at": "2026-11-13T19:00:00+00:00"}]}
+    again = run(url, models, api=api, publish=True, restart=True)
+    assert ("2026-11-16-maths-maths-before-quick-quiz", "published") in statuses(again)
+    assert api.instructions[-1]["status"] == "saved" and "maths-before-quick-quiz" in api.rules
+    assert sum(1 for _, what, _ in models.log if what == "Interpretation") == 1  # approved: no model

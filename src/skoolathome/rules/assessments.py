@@ -53,10 +53,14 @@ def detect(homework: Homework) -> tuple[Assessment, str]:
         return "yes", "flag"
     if not homework.text:
         return "unknown", ""  # listed without its text yet
-    text = _normalize(homework.text)
-    if _KEYWORDS.search(_NOT_A_TEST.sub(" ", text)):
+    if has_keywords(homework.text):
         return "yes", "keywords"
     return "no", ""
+
+
+def has_keywords(text: str) -> bool:
+    """A word that announces a test: contrôle, interro, évaluation…, unless it is about its correction."""
+    return bool(_KEYWORDS.search(_NOT_A_TEST.sub(" ", _normalize(text))))
 
 
 def is_ambiguous(text: str) -> bool:

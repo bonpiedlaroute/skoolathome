@@ -87,13 +87,31 @@ def observe(
             yield span
 
 
-def score(trace: str, name: str, value: float | bool, comment: str | None = None, data_type: str | None = None) -> None:
+def score(trace: str, name: str, value: float | bool | str, comment: str | None = None, data_type: str | None = None,
+          *, score_id: str | None = None, metadata: dict | None = None) -> None:
+    """A score on a trace. A str value is a category (wrong_answer, good…). With `score_id`, sending
+    the same score again replaces it instead of counting it twice."""
     lf = client()
     if lf is None:
         return
     if isinstance(value, bool):
         value, data_type = float(value), "BOOLEAN"
-    lf.create_score(trace_id=trace, name=name, value=value, comment=comment, data_type=data_type or "NUMERIC")
+    elif isinstance(value, str):
+        data_type = "CATEGORICAL"
+    lf.create_score(trace_id=trace, name=name, value=value, comment=comment, data_type=data_type or "NUMERIC",
+                    score_id=score_id, metadata=metadata)
+
+
+def project_url() -> str | None:
+    """The Langfuse project page, for the saved views (T22)."""
+    lf = client()
+    if lf is None:
+        return None
+    try:
+        project = lf.api.projects.get().data[0]
+    except Exception:  # noqa: BLE001  (Langfuse stopped)
+        return None
+    return f"{_conf()['host'].rstrip('/')}/project/{project.id}"
 
 
 def trace_url(trace: str) -> str | None:

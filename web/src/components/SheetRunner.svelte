@@ -124,7 +124,7 @@
     if (!item) return;
     const response = $state.snapshot(value) as string | string[];
     const correct = check(item.check.mode, item.answer, response, { variants: item.variants, tolerance: item.check.tolerance });
-    api.attempt(id, item.id, { mode: "solo", response, hints_used: hints });
+    api.attempt(id, item.id, { mode: "solo", response, hints_used: hints }, sheet?.trace_id);
     const c = counters(item);
     bump(item, correct ? { solo_right: c.solo_right + 1 } : { solo_wrong: c.solo_wrong + 1 });
     lastCorrect = correct;
@@ -140,7 +140,7 @@
 
   function selfAssess(right: boolean) {
     if (!item) return;
-    api.attempt(id, item.id, { mode: "solo", response: right, hints_used: hints });
+    api.attempt(id, item.id, { mode: "solo", response: right, hints_used: hints }, sheet?.trace_id);
     const c = counters(item);
     bump(item, right ? { solo_right: c.solo_right + 1 } : { solo_wrong: c.solo_wrong + 1 });
     lastCorrect = right;
@@ -160,7 +160,10 @@
   function rate(rating: Rating) {
     if (!item) return;
     const typed = $state.snapshot(value) as string | string[];
-    api.attempt(id, item.id, { mode: "together", rating, ...(isEmpty(typed) || item.type === "open" ? {} : { response: typed }) });
+    api.attempt(
+      id, item.id, { mode: "together", rating, ...(isEmpty(typed) || item.type === "open" ? {} : { response: typed }) },
+      sheet?.trace_id,
+    );
     bump(item, { rating });
     move(1);
   }
@@ -357,6 +360,7 @@
   <ReportDialog
     sheetId={id}
     itemId={item.id}
+    traceId={sheet?.trace_id}
     onclose={(sent) => {
       reporting = false;
       thanks = sent;

@@ -21,7 +21,15 @@ from skoolathome.api import auth, nip98, push
 from skoolathome.api.auth import Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
+from skoolathome.schema.instruction import (
+    ALLOWED_REPLIES,
+    InstructionReply,
+    InstructionUpdate,
+    NewInstruction,
+    PublishedRule,
+)
 from skoolathome.schema.request import NewRequest, RequestUpdate
+from skoolathome.schema.review import Annotation, WeeklyReview
 from skoolathome.schema.sheet import Sheet
 
 SCHOOL_TIMEZONE = ZoneInfo("Europe/Paris")
@@ -53,6 +61,7 @@ class AttemptRequest(Body):
     hints_used: int = Field(default=0, ge=0, le=20)
     client_id: str | None = Field(default=None, max_length=64)  # set by the browser, for retries
     answered_at: datetime | None = None
+    trace_id: str | None = Field(default=None, max_length=64)  # the sheet's trace, sent back by the PWA (T22)
 
     @model_validator(mode="after")
     def _has_an_answer(self) -> AttemptRequest:
@@ -69,6 +78,7 @@ class ReportRequest(Body):
     reason: Literal["wrong_answer", "not_covered", "unclear", "too_hard", "too_easy"]
     comment: str = Field(default="", max_length=500)
     client_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
 
 
 class FinishRequest(Body):
@@ -78,11 +88,14 @@ class FinishRequest(Body):
 class BatchRequest(Body):
     sheets: list[Sheet] = Field(default=[], max_length=50)
     requests: list[RequestUpdate] = Field(default=[], max_length=50)  # what became of the parent's requests
+    instructions: list[InstructionUpdate] = Field(default=[], max_length=50)  # questions, proposals, rules saved
+    rules: list[PublishedRule] | None = Field(default=None, max_length=100)  # every rule: replaces the list
+    review: WeeklyReview | None = None  # the weekly review (T24)
 
     @model_validator(mode="after")
     def _not_empty(self) -> BatchRequest:
-        if not self.sheets and not self.requests:
-            raise ValueError("a batch needs a sheet or a request update")
+        if not self.sheets and not self.requests and not self.instructions and self.rules is None and self.review is None:
+            raise ValueError("a batch needs a sheet, a request or instruction update, the rules or a review")
         return self
 
 
@@ -292,24 +305,30 @@ def create_attempt(
         )
     conn.execute(
         "INSERT INTO attempts (sheet_id, item_id, device_id, mode, response, correct, rating, hints_used, "
-        "client_id, answered_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "client_id, answered_at, trace_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
         (body.sheet_id, body.item_id, device.id, body.mode,
          None if body.response is None else Jsonb(body.response),
-         correct, body.rating, body.hints_used, body.client_id, body.answered_at),
+         correct, body.rating, body.hints_used, body.client_id, body.answered_at, _trace(sheet, body.trace_id)),
     )
     return {"correct": correct}
+
+
+def _trace(sheet: dict, sent: str | None) -> str | None:
+    """The sheet's own trace wins: the browser's copy may come from an older version of the sheet."""
+    return sheet.get("trace_id") or sent
 
 
 @app.post("/api/reports", status_code=201)
 def create_report(
     body: ReportRequest, device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)
 ) -> dict:
-    _load_sheet(conn, body.sheet_id)
+    sheet = _load_sheet(conn, body.sheet_id)
     conn.execute(
-        "INSERT INTO reports (sheet_id, item_id, device_id, reason, comment, client_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
-        (body.sheet_id, body.item_id, device.id, body.reason, body.comment, body.client_id),
+        "INSERT INTO reports (sheet_id, item_id, device_id, reason, comment, client_id, trace_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
+        (body.sheet_id, body.item_id, device.id, body.reason, body.comment, body.client_id,
+         _trace(sheet, body.trace_id)),
     )
     return {"ok": True}
 
@@ -371,6 +390,112 @@ def create_request(
 def list_requests(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
     rows = conn.execute(f"SELECT {_REQUEST_COLUMNS} FROM sheet_requests ORDER BY created_at DESC LIMIT 20").fetchall()
     return [_request_json(row) for row in rows]
+
+
+# -------------------------------------------------------------- instructions (T21)
+
+_INSTRUCTION_COLUMNS = ("id, text, rule, created_at, status, question, summary, proposal, rule_id, rule_version, "
+                        "reason, waiting, updated_at")
+
+
+def _instruction_json(row) -> dict:
+    return dict(zip(_INSTRUCTION_COLUMNS.split(", "), row))
+
+
+@app.post("/api/instructions", status_code=201)
+def create_instruction(
+    body: NewInstruction, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)
+) -> dict:
+    """An instruction in plain French, or a rule written in the form: read at the laptop's next run."""
+    row = conn.execute(
+        f"INSERT INTO instructions (id, text, rule, created_by) VALUES (%s, %s, %s, %s) RETURNING {_INSTRUCTION_COLUMNS}",
+        (f"ins-{secrets.token_hex(6)}", body.text.strip(), Jsonb(body.rule) if body.rule else None, device.id),
+    ).fetchone()
+    return _instruction_json(row)
+
+
+@app.get("/api/instructions")
+def list_instructions(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
+    rows = conn.execute(f"SELECT {_INSTRUCTION_COLUMNS} FROM instructions ORDER BY created_at DESC LIMIT 20").fetchall()
+    return [_instruction_json(row) for row in rows]
+
+
+@app.post("/api/instructions/{instruction_id}/reply", status_code=201)
+def reply_instruction(
+    instruction_id: str,
+    body: InstructionReply,
+    device: Device = Depends(parent_device),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """[Valider], [Modifier], [Annuler], or an answer to the agent's question. One reply per pause:
+    the next one waits for the laptop's answer."""
+    with conn.transaction():
+        found = conn.execute("SELECT status, waiting FROM instructions WHERE id = %s FOR UPDATE",
+                             (instruction_id,)).fetchone()
+        if found is None:
+            raise HTTPException(404, "unknown instruction")
+        status, waiting = found
+        if waiting or body.kind not in ALLOWED_REPLIES.get(status, set()):
+            raise HTTPException(409, f"cannot {body.kind} an instruction that is {'waiting' if waiting else status}")
+        conn.execute(
+            "INSERT INTO instruction_replies (instruction_id, kind, text, rule, created_by) VALUES (%s, %s, %s, %s, %s)",
+            (instruction_id, body.kind, body.text.strip(), Jsonb(body.rule) if body.rule else None, device.id),
+        )
+        row = conn.execute(
+            f"UPDATE instructions SET waiting = true, updated_at = now() WHERE id = %s RETURNING {_INSTRUCTION_COLUMNS}",
+            (instruction_id,),
+        ).fetchone()
+    return _instruction_json(row)
+
+
+@app.get("/api/rules")
+def list_rules(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
+    """The agent's rules, as the laptop last sent them."""
+    rows = conn.execute("SELECT id, version, status, summary, body, received_at FROM rules "
+                        "ORDER BY status <> 'active', id").fetchall()
+    return [{"id": r[0], "version": r[1], "status": r[2], "summary": r[3], "body": r[4], "received_at": r[5]}
+            for r in rows]
+
+
+# ------------------------------------------------------------- weekly review (T24)
+
+
+@app.get("/api/weekly-reviews")
+def list_reviews(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
+    rows = conn.execute("SELECT week, body->>'title', received_at FROM weekly_reviews ORDER BY week DESC LIMIT 12").fetchall()
+    return [{"week": r[0], "title": r[1], "received_at": r[2]} for r in rows]
+
+
+@app.get("/api/weekly-reviews/{week}")
+def get_review(week: str, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """A review (or the latest one), and which of its sheets the parent annotated already."""
+    row = conn.execute("SELECT body FROM weekly_reviews WHERE week = %s OR %s = 'latest' ORDER BY week DESC LIMIT 1",
+                       (week, week)).fetchone()
+    if row is None:
+        raise HTTPException(404, "no review")
+    review = row[0]
+    ids = [sheet["id"] for sheet in review.get("to_annotate", [])]
+    done = [r[0] for r in conn.execute("SELECT DISTINCT sheet_id FROM annotations WHERE sheet_id = ANY(%s)",
+                                       (ids,)).fetchall()]
+    return {**review, "annotated": done}
+
+
+@app.post("/api/annotations", status_code=201)
+def annotate(body: Annotation, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """The parent's verdict on each question of a sheet. Given again, the latest one counts."""
+    sheet = _load_sheet(conn, body.sheet_id)
+    known = {item["id"] for item in sheet["items"]}
+    if any(item.item_id not in known for item in body.items):
+        raise HTTPException(422, "unknown item")
+    with conn.transaction():
+        for item in body.items:
+            conn.execute(
+                "INSERT INTO annotations (sheet_id, item_id, device_id, ok, problem, comment) VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (sheet_id, item_id) DO UPDATE SET device_id = EXCLUDED.device_id, ok = EXCLUDED.ok, "
+                "problem = EXCLUDED.problem, comment = EXCLUDED.comment, created_at = now()",
+                (body.sheet_id, item.item_id, device.id, item.ok, None if item.ok else item.problem, item.comment.strip()),
+            )
+    return {"saved": len(body.items)}
 
 
 # --------------------------------------------------------------- notifications
@@ -469,9 +594,10 @@ def publish_batch(
     agent: nip98.Agent = Depends(nip98.require_agent),
     conn: psycopg.Connection = Depends(get_conn),
 ) -> dict:
-    """The evening's sheets, all or nothing. Each one shows from its own display date. The
-    requests answered tonight are updated, and the parent hears about them at once."""
-    answered = []
+    """The evening's sheets, all or nothing. Each one shows from its own display date. With them:
+    what became of the requests and instructions (the parent hears about them at once), the list
+    of rules for the parent view, and the weekly review."""
+    answered, instructed = [], []
     with conn.transaction():
         for sheet in batch.sheets:
             save_sheet(conn, sheet)
@@ -483,6 +609,38 @@ def publish_batch(
             ).fetchone()
             if row is not None:
                 answered.append((update, row))
+        for change in batch.instructions:
+            done = conn.execute(
+                "UPDATE instructions SET status = %s, question = %s, summary = %s, proposal = %s, rule_id = %s, "
+                "rule_version = %s, reason = %s, waiting = false, updated_at = now() WHERE id = %s RETURNING id",
+                (change.status, change.question, change.summary, Jsonb(change.proposal) if change.proposal else None,
+                 change.rule_id, change.rule_version, change.reason, change.id),
+            ).fetchone()
+            if done is not None:
+                instructed.append(change)
+        if batch.rules is not None:
+            conn.execute("DELETE FROM rules")
+            for rule in batch.rules:
+                conn.execute("INSERT INTO rules (id, version, status, summary, body) VALUES (%s, %s, %s, %s, %s)",
+                             (rule.id, rule.version, rule.status, rule.summary, Jsonb(rule.body)))
+        if batch.review is not None:
+            conn.execute("INSERT INTO weekly_reviews (week, body) VALUES (%s, %s) ON CONFLICT (week) DO UPDATE "
+                         "SET body = EXCLUDED.body, received_at = now()",
+                         (batch.review.week, Jsonb(batch.review.model_dump(mode="json"))))
+    if batch.review is not None:
+        push.send(conn, {"title": batch.review.title, "body": batch.review.body[:240],
+                         "url": f"/#/review/{batch.review.week}", "tag": f"review-{batch.review.week}"},
+                  roles=("parent",))
+    for change in instructed:
+        title, body = {
+            "question": ("une question sur ta consigne", change.question),
+            "proposed": ("consigne à valider", change.summary),
+            "saved": ("consigne enregistrée", change.summary),
+            "failed": ("consigne pas comprise", change.reason),
+        }.get(change.status, ("", ""))
+        if title:
+            push.send(conn, {"title": f"Révisions : {title}", "body": body[:240], "url": "/#/instructions",
+                             "tag": f"instruction-{change.id}"}, roles=("parent",))
     for update, (subject, focus) in answered:
         what = f" : {focus}" if focus else ""
         push.send(conn, {
@@ -491,7 +649,9 @@ def publish_batch(
             "url": f"/#/sheet/{update.sheet_id}" if update.sheet_id else "/#/requests",
             "tag": f"request-{update.id}",
         }, roles=("parent",))
-    return {"published": [sheet.id for sheet in batch.sheets], "requests": len(answered)}
+    return {"published": [sheet.id for sheet in batch.sheets], "requests": len(answered),
+            "instructions": len(instructed), "rules": len(batch.rules or []),
+            "review": batch.review.week if batch.review else None}
 
 
 @app.get("/api/feedback")
@@ -512,12 +672,12 @@ def feedback(
 
     attempts = conn.execute(
         "SELECT a.id, a.sheet_id, a.item_id, d.role, a.mode, a.response, a.correct, a.rating, a.hints_used, "
-        "a.answered_at, a.created_at FROM attempts a JOIN devices d ON d.id = a.device_id "
+        "a.answered_at, a.created_at, a.trace_id FROM attempts a JOIN devices d ON d.id = a.device_id "
         f"WHERE {received('a.created_at')} ORDER BY a.id",
         window,
     ).fetchall()
     reports = conn.execute(
-        "SELECT r.id, r.sheet_id, r.item_id, d.role, r.reason, r.comment, r.created_at "
+        "SELECT r.id, r.sheet_id, r.item_id, d.role, r.reason, r.comment, r.created_at, r.trace_id "
         "FROM reports r JOIN devices d ON d.id = r.device_id "
         f"WHERE {received('r.created_at')} ORDER BY r.id",
         window,
@@ -528,31 +688,56 @@ def feedback(
         window,
     ).fetchall()
     finishes = conn.execute(
-        "SELECT f.client_id, f.sheet_id, d.role, f.score, f.total, f.to_review, f.finished_at "
-        "FROM sheet_finishes f JOIN devices d ON d.id = f.device_id "
+        "SELECT f.client_id, f.sheet_id, d.role, f.score, f.total, f.to_review, f.finished_at, s.body->>'trace_id' "
+        "FROM sheet_finishes f JOIN devices d ON d.id = f.device_id LEFT JOIN sheets s ON s.id = f.sheet_id "
         f"WHERE {received('f.finished_at')} ORDER BY f.finished_at",
+        window,
+    ).fetchall()
+    instructions = conn.execute(
+        f"SELECT id, text, rule, created_at FROM instructions WHERE {received('created_at')} ORDER BY created_at",
+        window,
+    ).fetchall()
+    replies = conn.execute(
+        "SELECT id, instruction_id, kind, text, rule, created_at FROM instruction_replies "
+        f"WHERE {received('created_at')} ORDER BY id",
+        window,
+    ).fetchall()
+    annotations = conn.execute(
+        "SELECT id, sheet_id, item_id, ok, problem, comment, created_at FROM annotations "
+        f"WHERE {received('created_at')} ORDER BY id",
         window,
     ).fetchall()
     return {
         **window,
         "attempts": [
             {"id": r[0], "sheet_id": r[1], "item_id": r[2], "role": r[3], "mode": r[4], "response": r[5],
-             "correct": r[6], "rating": r[7], "hints_used": r[8], "answered_at": r[9], "created_at": r[10]}
+             "correct": r[6], "rating": r[7], "hints_used": r[8], "answered_at": r[9], "created_at": r[10],
+             "trace_id": r[11]}
             for r in attempts
         ],
         "reports": [
             {"id": r[0], "sheet_id": r[1], "item_id": r[2], "role": r[3], "reason": r[4], "comment": r[5],
-             "created_at": r[6]}
+             "created_at": r[6], "trace_id": r[7]}
             for r in reports
         ],
         "finishes": [
             {"id": r[0], "sheet_id": r[1], "role": r[2], "score": r[3], "total": r[4], "to_review": r[5],
-             "finished_at": r[6]}
+             "finished_at": r[6], "trace_id": r[7]}
             for r in finishes
         ],
         "requests": [
             {"id": r[0], "subject": r[1], "kind": r[2], "focus": r[3], "items": r[4], "created_at": r[5]}
             for r in requests
+        ],
+        "instructions": [{"id": r[0], "text": r[1], "rule": r[2], "created_at": r[3]} for r in instructions],
+        "instruction_replies": [
+            {"id": r[0], "instruction_id": r[1], "kind": r[2], "text": r[3], "rule": r[4], "created_at": r[5]}
+            for r in replies
+        ],
+        "annotations": [
+            {"id": r[0], "sheet_id": r[1], "item_id": r[2], "ok": r[3], "problem": r[4], "comment": r[5],
+             "created_at": r[6]}
+            for r in annotations
         ],
     }
 

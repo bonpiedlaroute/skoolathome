@@ -16,7 +16,9 @@ from skoolathome.api import app as app_module
 from skoolathome.api.app import app
 from skoolathome.publish.client import ApiClient, ApiError
 from skoolathome.publish.nip46 import authorization_header, nip98_tags
+from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
 from skoolathome.schema.request import RequestUpdate
+from skoolathome.schema.review import WeeklyReview
 from skoolathome.schema.sheet import Sheet
 from test_api import SAMPLE, api_db, browser, pair_child, parent  # noqa: F401  (fixtures)
 
@@ -265,3 +267,96 @@ def test_the_laptop_can_make_a_pairing_code(agent, api_db):
     assert phone.post("/api/pair", json={"token": made["code"]}).json()["role"] == "parent"
     unsigned = TestClient(app, base_url=BASE).post("/api/agent/pairing-tokens", json={"role": "parent", "label": "x"})
     assert unsigned.status_code in (401, 503)
+
+
+# ---------------------------------------------------------------- instructions (T21)
+
+PROPOSAL = {"id": "hi-ge-before-quick-quiz", "subject": "HI-GE", "trigger": "before_each_lesson",
+            "scope": "previous_lesson", "format": "quick_quiz", "target_minutes": 5}
+
+
+def test_an_instruction_is_proposed_validated_then_saved(agent, parent, api_db, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append(payload) or {"sent": 1})
+    created = parent.post("/api/instructions", json={"text": "Le prof d'histoire interroge à chaque cours."})
+    assert created.status_code == 201 and created.json()["status"] == "pending"
+    instruction = created.json()["id"]
+    reply = f"/api/instructions/{instruction}/reply"
+    assert parent.post(reply, json={"kind": "approve"}).status_code == 409  # nothing proposed yet
+    assert pair_child(parent).post("/api/instructions", json={"text": "x"}).status_code == 403  # parents only
+
+    [picked] = agent.feedback(0)["instructions"]
+    assert (picked["id"], picked["rule"]) == (instruction, None)
+    rules = [PublishedRule(id="daily", version=1, status="active", summary="Dans toutes les matières…",
+                           body={"id": "daily", "trigger": "after_each_lesson"})]
+    agent.publish([], instructions=[InstructionUpdate(id=instruction, status="proposed", proposal=PROPOSAL,
+                                                      summary="J'ai compris : En Histoire-géographie…")], rules=rules)
+    [listed] = parent.get("/api/instructions").json()
+    assert (listed["status"], listed["waiting"], listed["proposal"]["subject"]) == ("proposed", False, "HI-GE")
+    assert pushed[-1]["title"] == "Révisions : consigne à valider" and pushed[-1]["url"] == "/#/instructions"
+    assert [r["id"] for r in parent.get("/api/rules").json()] == ["daily"]
+
+    invalid = {**PROPOSAL, "subject": None}  # a rule before each lesson needs its subject
+    assert parent.post(reply, json={"kind": "edit", "rule": invalid}).status_code == 422
+    assert parent.post(reply, json={"kind": "edit", "rule": {**PROPOSAL, "target_minutes": 8}}).json()["waiting"]
+    assert parent.post(reply, json={"kind": "approve"}).status_code == 409  # one reply per pause
+    [sent_back] = agent.feedback(0)["instruction_replies"]
+    assert (sent_back["instruction_id"], sent_back["kind"], sent_back["rule"]["target_minutes"]) == (instruction, "edit", 8)
+
+    agent.publish([], instructions=[InstructionUpdate(id=instruction, status="saved", rule_id=PROPOSAL["id"],
+                                                      rule_version=1, summary="Règle enregistrée : …")])
+    [listed] = parent.get("/api/instructions").json()
+    assert (listed["status"], listed["waiting"], listed["rule_version"]) == ("saved", False, 1)
+    assert [r["id"] for r in parent.get("/api/rules").json()] == ["daily"]  # no list sent: kept
+
+
+def test_a_rule_written_in_the_form_is_an_instruction_too(parent):
+    created = parent.post("/api/instructions", json={"rule": PROPOSAL})
+    assert created.status_code == 201 and created.json()["text"] == ""
+    assert parent.post("/api/instructions", json={"text": "", "rule": None}).status_code == 422
+
+
+
+# ------------------------------------------------------------------ traces (T22)
+
+
+def test_answers_and_reports_carry_the_trace_of_their_sheet(agent, parent):
+    traced = Sheet.model_validate({**sheet("b1").model_dump(mode="json"), "trace_id": "a" * 32})
+    agent.publish([traced, sheet("b2")])
+    child = pair_child(parent)
+    child.post("/api/attempts", json={"sheet_id": "b1", "item_id": "q1", "response": "3/6", "trace_id": "b" * 32})
+    child.post("/api/attempts", json={"sheet_id": "b2", "item_id": "q1", "response": "3/6", "trace_id": "c" * 32})
+    child.post("/api/reports", json={"sheet_id": "b1", "item_id": "q2", "reason": "unclear"})
+    child.post("/api/sheets/b1/finish", json={"client_id": "finish-0002"})
+    data = agent.feedback(0)
+    # The sheet's own trace wins over the browser's copy; without one, the browser's is kept.
+    assert [a["trace_id"] for a in data["attempts"]] == ["a" * 32, "c" * 32]
+    assert data["reports"][0]["trace_id"] == "a" * 32 and data["finishes"][0]["trace_id"] == "a" * 32
+
+
+
+# ------------------------------------------------------------ weekly review (T24)
+
+
+def test_the_weekly_review_is_pushed_and_its_sheets_annotated(agent, parent, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append(payload) or {"sent": 1})
+    agent.publish([sheet("b1")])
+    review = WeeklyReview(week="2026-W46", start="2026-11-07", end="2026-11-13", title="Révisions : bilan de la semaine",
+                          body="Rien d'anormal. 8 fiches.", to_annotate=[{"id": "b1", "subject": "Maths", "title": "Fractions"}],
+                          indicators=[{"name": "reports", "label": "Signalements", "value": "0"}])
+    agent.publish([], review=review)
+    assert pushed[-1]["url"] == "/#/review/2026-W46" and pushed[-1]["title"] == "Révisions : bilan de la semaine"
+    shown = parent.get("/api/weekly-reviews/latest").json()
+    assert shown["week"] == "2026-W46" and shown["annotated"] == []
+    assert [r["week"] for r in parent.get("/api/weekly-reviews").json()] == ["2026-W46"]
+
+    verdict = {"sheet_id": "b1", "items": [{"item_id": "q1", "ok": True}, {"item_id": "q2", "ok": False, "problem": "answer_correct"}]}
+    assert pair_child(parent).post("/api/annotations", json=verdict).status_code == 403  # parents only
+    assert parent.post("/api/annotations", json={"sheet_id": "b1", "items": [{"item_id": "q9", "ok": True}]}).status_code == 422
+    assert parent.post("/api/annotations", json=verdict).json() == {"saved": 2}
+    assert parent.get("/api/weekly-reviews/2026-W46").json()["annotated"] == ["b1"]
+    changed = {"sheet_id": "b1", "items": [{"item_id": "q2", "ok": True}]}  # the parent changes their mind
+    parent.post("/api/annotations", json=changed)
+    found = sorted((a["item_id"], a["ok"], a["problem"]) for a in agent.feedback(0)["annotations"])
+    assert found == [("q1", True, None), ("q2", True, None)]

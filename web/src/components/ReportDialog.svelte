@@ -3,8 +3,12 @@
   import { api } from "../lib/api";
   import type { ReportReason } from "../lib/types";
 
-  let { sheetId, itemId, onclose }: { sheetId: string; itemId: string | null; onclose: (sent: boolean) => void } =
-    $props();
+  let {
+    sheetId,
+    itemId,
+    traceId,
+    onclose,
+  }: { sheetId: string; itemId: string | null; traceId?: string | null; onclose: (sent: boolean) => void } = $props();
 
   const REASONS: [ReportReason, string][] = [
     ["wrong_answer", "La réponse attendue est fausse"],
@@ -19,7 +23,7 @@
 
   function send() {
     if (!reason) return;
-    api.report(sheetId, itemId, reason, comment.trim());
+    api.report(sheetId, itemId, reason, comment.trim(), traceId);
     onclose(true);
   }
 </script>

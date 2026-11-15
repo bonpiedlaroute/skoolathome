@@ -76,6 +76,9 @@ def build(run_date: date, state: dict) -> dict:
     if tests:
         parts.append(("contrôle " if len(tests) == 1 else "contrôles ")
                      + ", ".join(f"{weekday(date.fromisoformat(t['day']))} ({t['subject']})" for t in tests[:3]))
+    waiting = (state.get("instructions") or {}).get("waiting", 0)
+    if waiting:
+        parts.append(f"{_plural(waiting, 'consigne')} à valider")
     memory, memory_details = _memory_line(state.get("memory") or [])
     status = "ko" if failed else "ok"
     head = f"KO : {problems[0]}. " if failed else "OK : "

@@ -3,7 +3,22 @@
 
 import { enqueue } from "./outbox.svelte";
 import type { Counters } from "./progress";
-import type { Device, Rating, ReportReason, RequestKind, Response as Answer, Sheet, SheetRequest, SheetSummary } from "./types";
+import type {
+  Device,
+  Instruction,
+  InstructionReplyKind,
+  ItemAnnotation,
+  PublishedRule,
+  Rating,
+  ReportReason,
+  RequestKind,
+  Response as Answer,
+  RuleBody,
+  Sheet,
+  SheetRequest,
+  SheetSummary,
+  WeeklyReview,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -52,13 +67,27 @@ export const api = {
   requests: () => call<SheetRequest[]>("GET", "/requests"),
   createRequest: (subject: string, kind: RequestKind, focus: string, items: number | null) =>
     call<SheetRequest>("POST", "/requests", { subject, kind, focus, items }),
+  instructions: () => call<Instruction[]>("GET", "/instructions"),
+  createInstruction: (fields: { text: string } | { rule: RuleBody }) => call<Instruction>("POST", "/instructions", fields),
+  replyInstruction: (id: string, kind: InstructionReplyKind, fields: { text?: string; rule?: RuleBody } = {}) =>
+    call<Instruction>("POST", `/instructions/${encodeURIComponent(id)}/reply`, { kind, ...fields }),
+  rules: () => call<PublishedRule[]>("GET", "/rules"),
+  reviews: () => call<{ week: string; title: string; received_at: string }[]>("GET", "/weekly-reviews"),
+  review: (week = "latest") => call<WeeklyReview>("GET", `/weekly-reviews/${encodeURIComponent(week)}`),
+  annotate: (sheetId: string, items: ItemAnnotation[]) => call<{ saved: number }>("POST", "/annotations", { sheet_id: sheetId, items }),
 
   // Queued: these return at once, the server gets them as soon as it can.
-  attempt(sheetId: string, itemId: string, fields: { mode: "solo" | "together"; response?: Answer; rating?: Rating; hints_used?: number }) {
-    enqueue("/attempts", { sheet_id: sheetId, item_id: itemId, answered_at: new Date().toISOString(), ...fields });
+  // traceId: the trace of the generation that made the sheet, so the answer reaches it in Langfuse (T22).
+  attempt(
+    sheetId: string,
+    itemId: string,
+    fields: { mode: "solo" | "together"; response?: Answer; rating?: Rating; hints_used?: number },
+    traceId?: string | null,
+  ) {
+    enqueue("/attempts", { sheet_id: sheetId, item_id: itemId, answered_at: new Date().toISOString(), ...fields, trace_id: traceId ?? null });
   },
-  report(sheetId: string, itemId: string | null, reason: ReportReason, comment: string) {
-    enqueue("/reports", { sheet_id: sheetId, item_id: itemId, reason, comment });
+  report(sheetId: string, itemId: string | null, reason: ReportReason, comment: string, traceId?: string | null) {
+    enqueue("/reports", { sheet_id: sheetId, item_id: itemId, reason, comment, trace_id: traceId ?? null });
   },
   finish(sheetId: string) {
     enqueue(`${sheetPath(sheetId)}/finish`, {});

@@ -44,6 +44,15 @@ class Prompt:
 
 
 def get(name: str, label: str = "production") -> Prompt:
+    """The version with `label`. A prompt without a `staging` version is used in its `production`
+    version: a candidate (T23) only needs the prompts it changes."""
+    found = _get(name, label)
+    if found.version is None and label != "production":
+        return _get(name, "production")
+    return found
+
+
+def _get(name: str, label: str) -> Prompt:
     fallback = local_messages(name)
     lf = tracing.client()
     if lf is None:
@@ -84,3 +93,24 @@ def push(name: str, label: str = "production") -> tuple[int, bool]:
 
 def names() -> list[str]:
     return sorted(path.stem for path in PROMPTS_DIR.glob("*.md"))
+
+
+def label_version(name: str, label: str) -> int | None:
+    """The version carrying `label` in Langfuse, or None."""
+    found = _get(name, label)
+    return found.version
+
+
+def same_text(name: str, label: str, other: str) -> bool:
+    """Two labels on the same messages, even as two versions."""
+    return _get(name, label).messages == _get(name, other).messages
+
+
+def move_label(name: str, version: int, label: str = "production") -> None:
+    """Put `label` on that version: Langfuse takes it off the version that had it (T23, `eval promote`)."""
+    lf = tracing.client()
+    if lf is None:
+        raise RuntimeError("Langfuse non configuré")
+    current = lf.get_prompt(name, version=version, type="chat", cache_ttl_seconds=0, max_retries=0)
+    labels = sorted(set(current.labels or []) - {"latest"} | {label})
+    lf.api.prompt_version.update(name, version, new_labels=labels)

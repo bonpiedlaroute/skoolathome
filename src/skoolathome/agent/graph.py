@@ -1,6 +1,7 @@
 """The evening graph (ARCHITECTURE.md §9.1).
 
-    collect ─► index_documents ─► sync_feedback ─► summarize_lessons ─► detect_tests ─► plan ─► retrieve
+    collect ─► index_documents ─► sync_feedback ─► instructions ─► summarize_lessons ─► detect_tests
+      ─► plan ─► retrieve
       ─► [Send: one branch per task] ─► judging ─► [Send: the judge reads each sheet] ─► regenerating
       ─► [Send: the sheets the judge sent back return to their branch] … ─► publish ─► report
 
@@ -19,6 +20,7 @@ run date as thread id: a run stopped half-way resumes where it was.
 
 from __future__ import annotations
 
+import contextvars
 import operator
 import time
 from collections.abc import Callable, Iterator
@@ -28,17 +30,30 @@ from datetime import date, timedelta
 from typing import Annotated, Any, TypedDict
 
 import psycopg
-from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 from rapidfuzz import fuzz
 
-from skoolathome.agent import config, draft, formats, guards, judge, lessons, prompts, report, tracing
+from skoolathome.agent import (
+    config,
+    draft,
+    formats,
+    guards,
+    instructions,
+    judge,
+    lessons,
+    making,
+    prompts,
+    report,
+    scores,
+    tracing,
+)
+from skoolathome.agent.checkpoints import checkpointer
 from skoolathome.agent.embeddings import EmbeddingError
 from skoolathome.agent.llm import ModelError
+from skoolathome.evaluation import weekly
 from skoolathome.material import index, search
 from skoolathome.rules import assessments
 from skoolathome.rules import inputs as plan_inputs
@@ -46,12 +61,13 @@ from skoolathome.rules import plan as planning
 from skoolathome.rules import store as rules_store
 from skoolathome.schema.sheet import Sheet
 from skoolathome.store import feedback as feedback_store
+from skoolathome.store import instructions as instructions_store
 from skoolathome.store import requests as requests_store
 from skoolathome.subjects import EXCLUDED_SUBJECTS, fr_day, label
 
-MAX_GENERATIONS = 3      # the first one, then up to two regenerations (ARCHITECTURE.md §9.5)
+MAX_GENERATIONS = making.MAX_GENERATIONS  # the first one, then up to two regenerations (§9.5)
 MAX_SOURCE_CHARS = 9000  # what the model reads: about 2 500 tokens, within an 8 192-token context
-MIN_SOURCE_CHARS = 120   # below that, no sheet: the model would invent, the guards refuse, three times
+MIN_SOURCE_CHARS = making.MIN_SOURCE_CHARS
 PAGE_CHARS = 3000
 MIN_QUERY_CHARS = 40     # a shorter text finds pages by chance: no search
 MAX_TEST_CHECKS = 10     # ambiguous homework asked to the model per evening
@@ -72,6 +88,7 @@ class EveningState(TypedDict, total=False):
     collect: dict
     documents: dict
     feedback: dict
+    instructions: dict   # the parent's instructions read tonight (T21)
     detected: dict
     plan: dict           # skipped tasks with their reason, tasks already made
     tests: list[dict]    # tests of the coming week, for the report
@@ -140,7 +157,8 @@ class Services:
 Connect = Callable[[], psycopg.Connection]
 
 
-def build(services: Services, connect: Connect, conf: config.Config | None = None) -> StateGraph:
+def build(services: Services, connect: Connect, conf: config.Config | None = None,
+          database_url: str | None = None) -> StateGraph:
     conf = conf or config.load()
     generator, judge_model = conf.model("generator"), conf.model("judge")
     models = services.models
@@ -160,17 +178,25 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             yield span
 
     def trace_metadata(task: dict, run_date: str) -> dict[str, str]:
+        """On every sheet trace (§14.5, T22): filter the scores by subject, rule, format, model, engine."""
         return {"run_date": run_date, "task": task["id"], "subject": task["subject_code"], "format": task["kind"],
                 "rule": task["rule"], "rule_version": str(task["rule_version"]), "stage": task.get("stage", ""),
-                **generator.metadata(conf.engine)}
+                **generator.metadata(conf.engine), "judge_model": judge_model.model,
+                "judge_quantization": judge_model.quantization}
+
+    def trace_tags(task: dict) -> list[str]:
+        """Tags of the saved views: one per rule, format, subject and model."""
+        return [f"rule:{task['rule']}", f"format:{task['kind']}", f"subject:{task['subject_code']}",
+                f"model:{generator.model}"]
 
     @contextmanager
-    def node(name: str, state: TaskState | Outcome, **kwargs: Any) -> Iterator[Any]:
-        """A span in the sheet's trace."""
+    def node(name: str, state: TaskState | Outcome, *, metadata: dict[str, str] | None = None,
+             **kwargs: Any) -> Iterator[Any]:
+        """A span in the sheet's trace. `metadata`: added to the trace's, e.g. the prompt version used."""
         task = state["task"]
         with tracing.observe(name, state["trace_id"], trace_name=f"sheet {task['id']}",
-                             metadata=trace_metadata(task, state["run_date"]),
-                             tags=[task["kind"], task["subject_code"], task["rule"]], **kwargs) as span:
+                             metadata={**trace_metadata(task, state["run_date"]), **(metadata or {})},
+                             tags=trace_tags(task), **kwargs) as span:
             yield span
 
     def output(span: Any, value: Any, warning: bool = False) -> None:
@@ -222,11 +248,41 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                               "until": data["until"]}
             except Exception as error:  # noqa: BLE001  (the feedback waits for tomorrow, the sheets do not)
                 result = {"error": str(error)[:300]}
+            try:
+                with connect() as conn:  # on each sheet's trace, with what an earlier evening could not send
+                    result["scores"] = scores.send(conn)
+            except Exception as error:  # noqa: BLE001  (Langfuse stopped: sent another evening)
+                result["scores"] = {"error": str(error)[:200]}
             output(span, result, warning="error" in result)
         say(f"Retours de la tablette : non récupérés ({result['error'][:100]})" if "error" in result else
             f"Retours de la tablette : {result['attempts']} réponse(s), {result['reports']} signalement(s), "
-            f"{result['finishes']} fiche(s) terminée(s), {result['requests']} demande(s) de fiche")
+            f"{result['finishes']} fiche(s) terminée(s), {result['requests']} demande(s) de fiche, "
+            f"{result['instructions']} consigne(s), {result['replies']} réponse(s) aux consignes")
         return {"feedback": result}
+
+    def read_instructions(state: EveningState) -> dict:
+        """The parent's instructions and replies (T21): the graph of instructions runs until its
+        next pause. A rule validated tonight is saved before the plan, so it counts tonight."""
+        if state.get("only_requests") or database_url is None:
+            return {}
+        with connect() as conn:
+            count = instructions_store.to_process(conn)
+        if not count:
+            return {"instructions": {"handled": 0}}
+        say(f"Consignes du parent : {count} à lire…")
+        with step("instructions", state) as span:
+            try:
+                # Its own graph and its own checkpoints: run outside this graph's context, so
+                # LangGraph does not take it for a subgraph of the evening.
+                result = contextvars.Context().run(
+                    instructions.process, database_url, models, state.get("student_id"),
+                    date.fromisoformat(state["run_date"]), conf, services.progress)
+            except Exception as error:  # noqa: BLE001  (read again tomorrow; the sheets do not wait)
+                result = {"error": str(error)[:300]}
+            output(span, result, warning=bool(result.get("error") or result.get("errors")))
+        say(f"Consignes : non lues ({result['error'][:100]})" if "error" in result else
+            f"Consignes : {result['saved']} règle(s) enregistrée(s), {result['waiting']} en attente de ta réponse")
+        return {"instructions": result}
 
     def summarize_lessons(state: EveningState) -> dict:
         """Each lesson is summarized once, when it arrives; the summary is kept in the database."""
@@ -390,35 +446,24 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         return {"sources": sources, "labels": labels, "overview": overview}
 
     def after_sources(state: TaskState) -> str:
-        return "generate" if _chars(state.get("sources") or {}) >= MIN_SOURCE_CHARS else "abstain"
+        return "generate" if making.chars(state.get("sources") or {}) >= MIN_SOURCE_CHARS else "abstain"
 
     def generate(state: TaskState) -> dict:
         task = state["task"]
         shape = formats.FORMATS[task["kind"]]
         prompt = prompts.get(shape.prompt)
-        feedback = ""
-        if state.get("failures"):
-            feedback = ("\nLa version précédente a été refusée par les vérifications. "
-                        "Corrige ces points :\n" + "\n".join(f"- {r}" for r in state["failures"]))
-        items = shape.item_count(task["target_minutes"], _chars(state["sources"]), task.get("items"))
-        messages = prompt.compile(
-            subject=task["subject"],
-            item_count=items,
-            target_minutes=task["target_minutes"],
-            sources="\n\n".join(f"[{key}]\n{text}" for key, text in state["sources"].items()),
-            feedback=feedback,
-            context=_context(task, state["sources"], state.get("overview", "")),
-        )
         attempt = state.get("attempts", 0) + 1
+        items = shape.item_count(task["target_minutes"], making.chars(state["sources"]), task.get("items"))
         say(f"{task['id']} : écriture, essai {attempt}" + (f", {items} questions" if shape.scales else "") + "…")
         started = time.monotonic()
-        with node("generate", state, prompt=prompt.client, input={"attempt": attempt}) as span:
-            try:
-                written = models.structured("generator", messages, shape.shape, tracing.callbacks())
-                sheet = draft.to_sheet(written, task=task, sources=state["sources"], labels=state.get("labels") or {},
-                                       trace_id=state["trace_id"])
-            except (ModelError, ValidationError, ValueError) as error:
-                reasons = [_format_reason(error)]
+        with node("generate", state, prompt=prompt.client, input={"attempt": attempt},
+                  metadata={f"prompt.{shape.prompt}": prompt.label}) as span:
+            written = making.write(models, prompt, task, state["sources"], state.get("labels") or {},
+                                   _context(task, state["sources"], state.get("overview", "")),
+                                   state.get("failures") or [], state["trace_id"])
+            sheet = written.sheet
+            if sheet is None:
+                reasons = written.failures
                 output(span, reasons[0][:500], warning=True)
                 say(f"{task['id']} : sortie refusée ({reasons[0][:120]})")
                 result = guards.GuardResult("format", False, reasons)
@@ -438,8 +483,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         task = state["task"]
         sheet = Sheet.model_validate(state["sheet"])
         with node("guards", state) as span:
-            results = guards.run_all(sheet, state["sources"], task["target_minutes"], task["computational"],
-                                     concepts=task.get("focus") or None)
+            results = making.check(sheet, state["sources"], task)
             for result in results:
                 tracing.score(state["trace_id"], f"guard.{result.name}", result.ok,
                               f"essai {state['attempts']}" + (" : " + " ; ".join(result.reasons)[:400] if result.reasons else ""))
@@ -460,7 +504,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
 
     def abstain(state: TaskState) -> dict:
         task = state["task"]
-        chars = _chars(state.get("sources") or {})
+        chars = making.chars(state.get("sources") or {})
         if not state.get("sources"):
             reason = task.get("missing") or "Rien d'exploitable dans les sources de cette fiche."
         elif chars < MIN_SOURCE_CHARS:
@@ -488,15 +532,11 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         task, attempt = outcome["task"], outcome["attempts"]
         sheet = Sheet.model_validate(outcome["sheet"])
         prompt = prompts.get(formats.JUDGE_PROMPT)
-        messages = prompt.compile(subject=task["subject"], sheet=judge.render(sheet),
-                                  sources="\n\n".join(f"[{key}]\n{text}" for key, text in outcome["sources"].items()))
-        verdict, error = None, ""
         say(f"{task['id']} : relecture par le correcteur…")
-        with node("judge", outcome, prompt=prompt.client, input={"attempt": attempt}) as span:
-            try:
-                verdict = models.structured("judge", messages, judge.Verdict, tracing.callbacks())
-            except (ModelError, ValidationError) as failure:
-                error = str(failure)[:300]
+        with node("judge", outcome, prompt=prompt.client, input={"attempt": attempt},
+                  metadata={f"prompt.{formats.JUDGE_PROMPT}": prompt.label}) as span:
+            judged = making.judge_once(models, prompt, task, sheet, outcome["sources"])
+            verdict, error = judged.verdict, judged.error
             output(span, verdict.model_dump() if verdict else error, warning=verdict is None)
         record = {"model": judge_model.model, "prompt_version": prompt.label, "attempt": attempt}
         if verdict is None:
@@ -506,7 +546,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             tracing.score(outcome["trace_id"], "judge.available", False, error)
             status = "ready"
         else:
-            failures = judge.reasons(verdict, sheet)
+            failures = judged.failures
             record |= {"available": True, "ok": not failures, "reasons": failures, "verdict": verdict.model_dump()}
             for name, rate in judge.rates(verdict, sheet).items():
                 tracing.score(outcome["trace_id"], f"judge.{name}", rate)
@@ -549,6 +589,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
     def publish(state: EveningState) -> dict:
         """One signed batch with every sheet ready, including those an earlier evening could not
         send. Never the sheets made to try a format (`--lesson`), nor those past their due date."""
+        run_day = date.fromisoformat(state["run_date"])
         with step("publish", state) as span:
             if not state.get("publish"):
                 result: dict = {"skipped": "--no-publish"}
@@ -562,27 +603,46 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                         (state.get("student_id"), state["run_date"]),
                     ).fetchall()
                     answered = requests_store.to_report(conn)  # requests made online, and their outcome
+                    updates = instructions_store.to_report(conn)  # instructions: a question, a proposal…
+                    rules = rules_store.published(conn)  # the parent view lists them
+                    review_error = ""
+                    if state.get("student_id") and not state.get("only_requests") and weekly.due(conn, run_day):
+                        try:  # T24; a review that fails never holds back the sheets
+                            weekly.save(conn, weekly.compute(conn, state["student_id"], run_day))
+                        except Exception as error:  # noqa: BLE001
+                            review_error = str(error)[:200]
+                    review = weekly.unsent(conn)
                 sheets = [Sheet.model_validate(row[0]) for row in rows]
-                if not sheets and not answered:
+                if not sheets and not answered and not updates and not rules and review is None:
                     result = {"count": 0, "ids": []}
                 else:
                     try:
                         ids: list[str] = []
                         with services.api() as client:
                             for start in range(0, max(len(sheets), 1), BATCH_MAX):
-                                ids += client.publish(sheets[start:start + BATCH_MAX], answered if start == 0 else [])
+                                first = start == 0
+                                ids += client.publish(sheets[start:start + BATCH_MAX], answered if first else [],
+                                                      instructions=updates if first else [],
+                                                      rules=rules if first else None,
+                                                      review=review if first else None)
                         with connect() as conn:
                             conn.execute("UPDATE agent.sheets SET status = 'published', published_at = now() "
                                          "WHERE id = ANY(%s)", (ids,))
                             requests_store.reported(conn, [a.id for a in answered])
-                        result = {"count": len(ids), "ids": ids, "requests": len(answered)}
+                            instructions_store.reported(conn, [u.id for u in updates])
+                            if review is not None:
+                                weekly.sent(conn, review.week)
+                        result = {"count": len(ids), "ids": ids, "requests": len(answered),
+                                  "instructions": len(updates), **({"review": review.week} if review else {}),
+                                  **({"review_error": review_error} if review_error else {})}
                     except Exception as error:  # noqa: BLE001  (sent tomorrow with the next batch)
                         result = {"error": str(error)[:300], "count": 0}
             output(span, result, warning="error" in result)
         if "error" in result:
             say(f"Publication en échec : {result['error'][:150]}")
         elif "count" in result:
-            say(f"Publication : {result['count']} fiche(s) envoyée(s)")
+            say(f"Publication : {result['count']} fiche(s) envoyée(s)"
+                + (f", bilan de la semaine {result['review']}" if result.get("review") else ""))
         return {"published": result}
 
     def end_report(state: EveningState) -> dict:
@@ -625,7 +685,8 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
     evening = StateGraph(EveningState)
     for name, function in [
         ("collect", collect), ("index_documents", index_documents), ("sync_feedback", sync_feedback),
-        ("summarize_lessons", summarize_lessons), ("detect_tests", detect_tests), ("plan", plan),
+        ("instructions", read_instructions), ("summarize_lessons", summarize_lessons),
+        ("detect_tests", detect_tests), ("plan", plan),
         ("retrieve", retrieve), ("judge", judge_sheet), ("publish", publish), ("report", end_report),
     ]:
         evening.add_node(name, function)
@@ -633,7 +694,8 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
     evening.add_node("judging", lambda state: {})       # waits for every branch
     evening.add_node("regenerating", lambda state: {})  # waits for every judgment
     for first, then in [("collect", "index_documents"), ("index_documents", "sync_feedback"),
-                        ("sync_feedback", "summarize_lessons"), ("summarize_lessons", "detect_tests"),
+                        ("sync_feedback", "instructions"), ("instructions", "summarize_lessons"),
+                        ("summarize_lessons", "detect_tests"),
                         ("detect_tests", "plan"), ("plan", "retrieve"), ("task", "judging"),
                         ("judge", "regenerating"), ("publish", "report")]:
         evening.add_edge(first, then)
@@ -657,10 +719,6 @@ def _test_day(written: str | None, today: date, due_on: date) -> date | None:
     if day is None or not today < day <= due_on + timedelta(days=planning.HORIZON_DAYS):
         return None
     return day
-
-
-def _chars(sources: dict[str, str]) -> int:
-    return sum(len(text.strip()) for text in sources.values())
 
 
 def _query(conn: psycopg.Connection, student_id: str, task: dict) -> str:
@@ -780,11 +838,11 @@ def _outcome(state: TaskState, status: str, reason: str = "") -> Outcome:
     }
 
 
-def _format_reason(error: Exception) -> str:
-    if isinstance(error, ValidationError):
-        details = "; ".join(f"{'.'.join(str(p) for p in e['loc'])} : {e['msg']}" for e in error.errors()[:5])
-        return f"fiche mal formée : {details}"
-    return f"fiche mal formée : {error}"[:600]
+def _model_input(outcome: Outcome) -> dict:
+    """What the model read: a real case of the reference set replays exactly that (T23)."""
+    sources = outcome.get("sources") or {}
+    return {"task": outcome["task"], "sources": sources, "labels": outcome.get("labels") or {},
+            "context": _context(outcome["task"], sources, outcome.get("overview", ""))}
 
 
 def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:
@@ -794,20 +852,21 @@ def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:
     conn.execute(
         "INSERT INTO agent.sheets (id, run_date, task_id, student_id, subject_code, kind, status, body, reason, "
         "attempts, guards, trace_id, model, prompt_version, release, judge, rule_id, rule_version, visible_from, "
-        "due_by, minutes, inputs) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "due_by, minutes, inputs, model_input) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (id) DO UPDATE SET run_date = EXCLUDED.run_date, status = EXCLUDED.status, "
         "body = EXCLUDED.body, reason = EXCLUDED.reason, attempts = EXCLUDED.attempts, guards = EXCLUDED.guards, "
         "trace_id = EXCLUDED.trace_id, model = EXCLUDED.model, prompt_version = EXCLUDED.prompt_version, "
         "release = EXCLUDED.release, judge = EXCLUDED.judge, rule_id = EXCLUDED.rule_id, "
         "rule_version = EXCLUDED.rule_version, visible_from = EXCLUDED.visible_from, due_by = EXCLUDED.due_by, "
-        "minutes = EXCLUDED.minutes, inputs = EXCLUDED.inputs, updated_at = now(), published_at = NULL",
+        "minutes = EXCLUDED.minutes, inputs = EXCLUDED.inputs, model_input = EXCLUDED.model_input, "
+        "updated_at = now(), published_at = NULL",
         (task["id"], outcome["run_date"], task["id"], outcome["student_id"], task["subject_code"], task["kind"], status,
          Jsonb(sheet) if sheet else None, outcome.get("reason", ""), outcome.get("attempts", 0),
          Jsonb(outcome.get("guard_log") or []), outcome["trace_id"], model, outcome.get("prompt_version", ""),
          tracing.release(), Jsonb(outcome.get("judge")) if outcome.get("judge") else None, task["rule"],
          task["rule_version"], task["visible_from"], task.get("due_by"),
-         sheet["estimated_minutes"] if sheet else 0, task.get("inputs", "")),
+         sheet["estimated_minutes"] if sheet else 0, task.get("inputs", ""), Jsonb(_model_input(outcome))),
     )
     if task.get("request_id"):
         requests_store.answer(conn, task["request_id"], "done" if ready else "abstained",
@@ -815,15 +874,6 @@ def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:
 
 
 # ------------------------------------------------------------------------------ running
-
-
-@contextmanager
-def checkpointer(database_url: str) -> Iterator[PostgresSaver]:
-    """LangGraph's tables live in the `langgraph` schema of the application database."""
-    conninfo = make_conninfo(database_url, options="-c search_path=langgraph")
-    with PostgresSaver.from_conn_string(conninfo) as saver:
-        saver.setup()
-        yield saver
 
 
 @dataclass
@@ -854,7 +904,7 @@ def run(
     thread = run_date.isoformat() + ("-requests" if only_requests else "")
     config_ = {"configurable": {"thread_id": thread}, "max_concurrency": 1, "recursion_limit": 200}
     with checkpointer(database_url) as saver:
-        graph = build(services, connect).compile(checkpointer=saver)
+        graph = build(services, connect, database_url=database_url).compile(checkpointer=saver)
         interrupted = bool(graph.get_state(config_).next)
         if interrupted and not restart:
             if services.progress is not None:

@@ -3,10 +3,12 @@
 
   import Devices from "./components/Devices.svelte";
   import Home from "./components/Home.svelte";
+  import Instructions from "./components/Instructions.svelte";
   import Pair from "./components/Pair.svelte";
   import PrintSheet from "./components/PrintSheet.svelte";
   import Requests from "./components/Requests.svelte";
   import SheetRunner from "./components/SheetRunner.svelte";
+  import WeeklyReview from "./components/WeeklyReview.svelte";
   import { api, ApiError } from "./lib/api";
   import type { Device } from "./lib/types";
 
@@ -19,6 +21,12 @@
   const sheetRoute = $derived.by(() => {
     const match = /^\/sheet\/([^/]+)(?:\/(together|review|print))?$/.exec(route);
     return match ? { id: decodeURIComponent(match[1]), view: match[2] ?? "choose" } : null;
+  });
+
+  // #/review (the latest) or #/review/2026-W46, from the weekly notification
+  const reviewWeek = $derived.by(() => {
+    const match = /^\/review(?:\/(\d{4}-W\d{2}))?$/.exec(route);
+    return match ? (match[1] ?? "latest") : null;
   });
 
   const go = (path: string) => (location.hash = path);
@@ -98,7 +106,11 @@
   <Devices onexit={() => go("/")} />
 {:else if route === "/requests" && device.role === "parent"}
   <Requests onexit={() => go("/")} onopen={(id) => go(sheetPath(id))} />
+{:else if route === "/instructions" && device.role === "parent"}
+  <Instructions onexit={() => go("/")} />
+{:else if reviewWeek && device.role === "parent"}
+  {#key reviewWeek}<WeeklyReview week={reviewWeek} onexit={() => go("/")} />{/key}
 {:else}
   <Home {device} onopen={(id, how) => go(sheetPath(id, how ?? ""))} ondevices={() => go("/devices")}
-    onrequests={() => go("/requests")} />
+    onrequests={() => go("/requests")} oninstructions={() => go("/instructions")} onreview={() => go("/review")} />
 {/if}

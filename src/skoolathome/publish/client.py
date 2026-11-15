@@ -13,7 +13,9 @@ from nostr_sdk import Event
 
 from skoolathome import secrets
 from skoolathome.publish.nip46 import NIP98_KIND, authorization_header, nip98_tags
+from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
 from skoolathome.schema.request import RequestUpdate
+from skoolathome.schema.review import WeeklyReview
 from skoolathome.schema.sheet import Sheet
 
 API_SECRET_NAME = "api"  # ~/.config/skoolathome/api.json: {"url": "https://….vercel.app"}
@@ -64,11 +66,20 @@ class ApiClient:
             raise ApiError(response.status_code, str(detail)[:500])
         return response.json()
 
-    def publish(self, sheets: list[Sheet], requests: list[RequestUpdate] | None = None) -> list[str]:
-        """The sheets, and what became of the requests made from the PWA: one signature."""
+    def publish(self, sheets: list[Sheet], requests: list[RequestUpdate] | None = None, *,
+                instructions: list[InstructionUpdate] | None = None,
+                rules: list[PublishedRule] | None = None, review: WeeklyReview | None = None) -> list[str]:
+        """The sheets, what became of the requests and instructions made from the PWA, the rules
+        for the parent view, and the weekly review: one signature."""
         payload: dict = {"sheets": [sheet.model_dump(mode="json") for sheet in sheets]}
         if requests:
             payload["requests"] = [r.model_dump(mode="json") for r in requests]
+        if instructions:
+            payload["instructions"] = [i.model_dump(mode="json") for i in instructions]
+        if rules is not None:
+            payload["rules"] = [r.model_dump(mode="json") for r in rules]
+        if review is not None:
+            payload["review"] = review.model_dump(mode="json")
         return self._call("POST", "/api/batches", payload)["published"]
 
     def feedback(self, since: int = 0) -> dict:

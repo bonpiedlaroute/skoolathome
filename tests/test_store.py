@@ -10,7 +10,7 @@ from conftest import load
 from skoolathome import summary
 from skoolathome.collect import collect, pick_student
 from skoolathome.collectors.ecoledirecte.client import EcoleDirecteError, TwoFactorRequired
-from skoolathome.store.migrate import migrate
+from skoolathome.store.migrate import available, migrate
 
 TODAY = date(2026, 11, 4)
 ALL_MODULES = ["CAHIER_DE_TEXTES", "EDT", "NOTES"]
@@ -69,7 +69,8 @@ def count(conn, table: str) -> int:
 def test_migrations_apply_once_and_vector_is_installed(conn):
     assert migrate(conn) == []  # the fixture already applied them
     versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY 1")]
-    assert versions == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+    assert versions == [version for version, _ in available()]
+    assert versions[:8] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
     assert conn.execute("SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector").fetchone()[0] == 1.0
 
 

@@ -7,7 +7,10 @@ from datetime import date
 import psycopg
 from psycopg.types.json import Jsonb
 
+from skoolathome.rules import privacy
 from skoolathome.rules.defaults import DEFAULT_RULES
+from skoolathome.rules.describe import describe
+from skoolathome.schema.instruction import PublishedRule
 from skoolathome.schema.rule import Rule
 
 _LATEST = (
@@ -73,6 +76,14 @@ def get(conn: psycopg.Connection, rule_id: str) -> Rule:
 def set_status(conn: psycopg.Connection, rule_id: str, status: str) -> Rule:
     """Archive or reactivate a rule (a parent's decision): a new version with the new status."""
     return save(conn, by_parent(get(conn, rule_id), status=status))
+
+
+def published(conn: psycopg.Connection) -> list[PublishedRule]:
+    """Every rule as the parent view lists it, sent with the evening's batch (T21). No surname."""
+    names = privacy.teachers(conn)
+    return [PublishedRule(id=rule.id, version=rule.version, status=rule.status, summary=describe(rule)[:800],
+                          body=privacy.public_rule(rule.model_dump(mode="json"), names))
+            for rule in sorted(latest(conn), key=lambda r: (r.status != "active", r.priority, r.id))]
 
 
 def set_fields(conn: psycopg.Connection, rule_id: str, changes: dict) -> Rule:
