@@ -417,3 +417,43 @@ def test_a_proposal_of_the_agent_is_created_by_the_batch_and_refused_with_a_reas
     parent.post("/api/instructions/agent-1/reply", json={"kind": "reject", "text": "seulement avant les contrôles"})
     [refused] = agent.feedback(0)["instruction_replies"]
     assert (refused["kind"], refused["text"]) == ("reject", "seulement avant les contrôles")
+
+
+# ------------------------------------------------------------------------ home page
+
+
+def test_the_home_page_is_sent_signed_and_read_with_the_progress(agent, parent, monkeypatch):
+    from datetime import datetime
+
+    from skoolathome.schema.home import Home
+
+    assert parent.get("/api/home").json() == {"home": None}
+    agent.publish([sheet("b1")])
+    page = Home.model_validate({
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "slots": [{"day": "2026-11-16", "starts": "08:20", "ends": "09:15", "subject_code": "MATHS",
+                   "subject": "Mathématiques"}],
+        "grades": [{"subject_code": "MATHS", "subject": "Mathématiques", "grades": [
+            {"day": "2026-11-06", "kind": "Contrôle", "title": "Chapitre 3", "value": "16,75", "score": 16.75,
+             "out_of": 20, "class_average": 14.2, "class_min": 6, "class_max": 19.5}]}],
+        "suggestions": [{"subject_code": "MATHS", "subject": "Mathématiques", "reason": "lesson",
+                         "for_day": "2026-11-16", "sheet_ids": ["b1", "unknown"],
+                         "request": {"kind": "extra", "focus": "la séance du jeudi 12/11"}}],
+    })
+    agent.home(page)
+    parent.post("/api/requests", json={"subject": "FRANC", "kind": "revision"})
+    child = pair_child(parent)
+    shown = child.get("/api/home").json()
+    assert shown["home"]["grades"][0]["grades"][0]["class_max"] == 19.5
+    assert list(shown["sheets"]) == ["b1"] and shown["sheets"]["b1"]["answered"] == 0
+    assert shown["requested"] == ["FRANC"]
+    agent.home(page.model_copy(update={"suggestions": []}))  # the next collection replaces it
+    assert parent.get("/api/home").json()["home"]["suggestions"] == []
+
+
+def test_the_laptop_notifies_the_parents(agent, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append((payload, kw)) or {"sent": 1})
+    agent.notify("Révisions : réponse fausse signalée", "sheet-generator v5", url="/#/review")
+    assert pushed == [({"title": "Révisions : réponse fausse signalée", "body": "sheet-generator v5",
+                        "url": "/#/review", "tag": "agent"}, {"roles": ("parent",)})]

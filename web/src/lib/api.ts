@@ -6,6 +6,7 @@ import type { Counters } from "./progress";
 import type {
   Device,
   Explanation,
+  HomeData,
   Instruction,
   InstructionReplyKind,
   ItemAnnotation,
@@ -56,6 +57,7 @@ export const api = {
   pairWithCode: (code: string, label: string) => call<Device>("POST", "/pair", { code, label }),
   pairWithToken: (token: string) => call<Device>("POST", "/pair", { token }),
   sheets: () => call<SheetSummary[]>("GET", "/sheets"),
+  home: () => call<HomeData>("GET", "/home"),
   sheet: (id: string) => call<Sheet>("GET", sheetPath(id)),
   progress: (id: string) => call<Record<string, Counters>>("GET", `${sheetPath(id)}/progress`),
   devices: () => call<Device[]>("GET", "/devices"),
@@ -109,6 +111,7 @@ export async function warmCache(): Promise<void> {
   try {
     await api.me();
     const sheets = await api.sheets();
+    await api.home().catch(() => undefined);
     await Promise.allSettled(sheets.slice(0, PREFETCH).flatMap((s) => [api.sheet(s.id), api.progress(s.id)]));
   } catch {
     // offline or not paired: nothing to keep

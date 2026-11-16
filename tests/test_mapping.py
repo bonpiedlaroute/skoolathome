@@ -101,3 +101,18 @@ def test_missing_field_is_a_clear_validation_error(fixture, translate, remove):
     assert removed is not None
     with pytest.raises(ValidationError, match="Field required"):
         translate(response, "42")
+
+
+def test_grade_with_the_class_average_lowest_and_highest():
+    response = load("grades")
+    note = response["data"]["notes"][0]
+    note.update(moyenneClasse="8.45", minClasse="1.50", maxClasse="10.00")
+    grade = mapping.map_grades(response, "42")[0]
+    assert (grade.class_average, grade.class_min, grade.class_max) == (Decimal("8.45"), Decimal("1.50"), Decimal("10.00"))
+
+
+def test_grade_without_class_figures_yet():
+    response = load("grades")
+    response["data"]["notes"][0].update(moyenneClasse="", minClasse="", maxClasse="")
+    grade = mapping.map_grades(response, "42")[0]
+    assert grade.class_average is None and grade.class_min is None and grade.class_max is None

@@ -23,6 +23,7 @@ from skoolathome.subjects import label
 
 DUE_WEEKDAY = 4          # from Friday: the first evening of the end of the week sends it
 TO_ANNOTATE = 5
+TO_ANNOTATE_DRIFT = 10   # the week after the judge drifted: twice as many sheets to annotate (T33)
 AGREEMENT_WINDOW = 30    # the last annotated sheets (§14.2): 5 a week are too few on their own
 MIN_ANSWERS = 10         # below that, a success rate says nothing
 # Alert thresholds: past them, the indicator is put first in the review.
@@ -122,7 +123,13 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
         "WHERE coalesce(e.asked_at, e.answered_at)::date BETWEEN %s AND %s", (start, end),
     ).fetchall()
     agreed = agreement(conn)
-    chosen = to_annotate(conn, student_id, start, end, week)
+    drifted = _drifted_last_week(conn, week)
+    chosen = to_annotate(conn, student_id, start, end, week, TO_ANNOTATE_DRIFT if drifted else TO_ANNOTATE)
+    from skoolathome.evaluation import changes  # T32
+    from skoolathome.rules import calibration  # T33
+
+    watched = changes.recent(conn, end)
+    levels = calibration.levels(conn, student_id)
     from skoolathome.agent.proposals import acceptance  # T28
 
     proposed = acceptance(conn)
@@ -165,8 +172,18 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
         Indicator(name="agreement", label="Accord entre le correcteur et toi",
                   value=f"{_percent(agreed['rate'])} sur {agreed['items']} questions" if agreed["rate"] is not None
                   else "pas encore de fiche notée",
-                  alert=agreed["rate"] is not None and agreed["items"] >= MIN_ANSWERS and agreed["rate"] < AGREEMENT_MIN,
-                  detail=f"Sur les {agreed['sheets']} dernières fiches notées. Seuil : 80 %." if agreed["rate"] is not None else ""),
+                  alert=_drifts(agreed),
+                  detail=((f"Le correcteur dérive : {len(chosen)} fiches à noter cette semaine. " if _drifts(agreed) else "")
+                          + f"Sur les {agreed['sheets']} dernières fiches notées. Seuil : 80 %.")
+                  if agreed["rate"] is not None else ""),
+        Indicator(name="changes", label="Changements de l'agent (deux semaines)",
+                  value=f"{len(watched)} changement{'s' if len(watched) > 1 else ''}" if watched else "aucun",
+                  alert=any(c["compared"]["after"]["wrong_answers"] for c in watched),
+                  detail=_changes(watched)),
+        Indicator(name="difficulty", label="Difficulté visée",
+                  value=", ".join(f"{label(code)} {c.level}" for code, c in sorted(levels.items()) if c.calibrated)
+                  or "pas encore assez de réponses",
+                  detail=_difficulty(levels, start)),
     ]
     if made == 0:
         indicators.insert(0, Indicator(name="nothing", label="Fiches faites cette semaine", value="aucune", alert=True,
@@ -186,10 +203,52 @@ def compute(conn: psycopg.Connection, student_id: str, day: date) -> Review:
                "guard_failures": dict(failures), "reports": dict(by_reason), "reports_by_rule": dict(by_rule),
                "solo_answers": len(solo), "success": success, "tests": tests, "agreement": agreed,
                "proposals": proposed,
+               "changes": [{"id": c["id"], "name": c["name"], "before": c["before"], "after": c["after"],
+                            **c["compared"]} for c in watched],
+               "difficulty": {code: {"level": c.level, "answers": c.answers, "rate": c.rate,
+                                     "changes": [(ch.before, ch.after, ch.at.isoformat() if ch.at else None)
+                                                 for ch in c.changes]} for code, c in levels.items()},
+               "annotate_count": len(chosen),
                "not_understood": {"asked": len(asked), "helped": sum(1 for h, _, _ in asked if h),
                                   "not_helped": sum(1 for h, _, _ in asked if h is False)},
                "alerts": [i.name for i in alerts]}
     return Review(payload, metrics)
+
+
+def _drifts(agreed: dict) -> bool:
+    return agreed["rate"] is not None and agreed["items"] >= MIN_ANSWERS and agreed["rate"] < AGREEMENT_MIN
+
+
+def _drifted_last_week(conn: psycopg.Connection, week: str) -> bool:
+    """The previous review said the judge drifts: this week, 10 sheets to annotate instead of 5."""
+    row = conn.execute("SELECT metrics FROM agent.weekly_reviews WHERE week < %s ORDER BY week DESC LIMIT 1",
+                       (week,)).fetchone()
+    return bool(row) and "agreement" in (row[0] or {}).get("alerts", [])
+
+
+def _rate(value: float | None) -> str:
+    return _percent(value) if value is not None else "—"
+
+
+def _changes(watched: list[dict]) -> str:
+    """Each change of the last two weeks, with the real feedback before and after (T32)."""
+    parts = []
+    for change in watched[:4]:
+        before, after = change["compared"]["before"], change["compared"]["after"]
+        parts.append(f"{change['name']} {change['before']} → {change['after']} ({change['at']:%d/%m}) : réussite "
+                     f"{_rate(before['success'])} → {_rate(after['success'])}, signalements {before['reports']} → "
+                     f"{after['reports']}, réponses fausses {before['wrong_answers']} → {after['wrong_answers']}, "
+                     f"{after['sheets']} fiche(s) depuis")
+    return ". ".join(parts)[:400]
+
+
+def _difficulty(levels: dict, start: date) -> str:
+    """The changes of the week, per subject (T33)."""
+    moved = [f"{label(code)} {ch.before} → {ch.after} ({_percent(ch.rate)} sur les 10 dernières)"
+             for code, c in sorted(levels.items()) for ch in c.changes if ch.at and ch.at.date() >= start]
+    text = ("Cette semaine : " + ", ".join(moved) + ". " if moved else "") + \
+        "Monte au-dessus de 85 % de réussite seul, descend sous 60 %, au moins 10 réponses entre deux changements."
+    return text[:400]
 
 
 def _not_understood(asked: list[tuple]) -> str:

@@ -52,7 +52,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
         client, pause = EcoleDirecteClient(conf["username"], conf["password"], device), 1.0
     try:
         with _connect() as conn:
-            result = collect(conn, client, student_id=args.student, today=_today(args), pause=pause)
+            result = collect(conn, client, student_id=args.student, today=_today(args), pause=pause,
+                             download=not args.no_download)
     finally:
         client.close()
     print(f"Collecte n° {result.run_id} : {result.status}")
@@ -124,6 +125,10 @@ def cmd_evening(args: argparse.Namespace) -> int:
         return 1
     with _connect() as conn:
         student = str(args.student) if args.student else summary.latest_student(conn)
+        from skoolathome.evaluation import changes
+
+        for part in changes.record_config(conn):  # a model or an engine changed in models.toml (T32)
+            print(f"Journal des changements : {part} noté.")
     services = graph.Services(
         models=llm.Models(),
         collector=None if args.no_collect or args.only_requests else _collector(args),
@@ -777,9 +782,11 @@ def cmd_eval_sync(args: argparse.Namespace) -> int:
     from skoolathome.evaluation import cases
 
     with _connect() as conn:
-        traps = cases.load_traps(conn)
+        traps = cases.load_files(conn)
+        corrections, judged = cases.from_corrections(conn), cases.judge_cases(conn)
         sent = cases.sync(conn)
-    print(f"{traps} piège(s) chargé(s) depuis evals/traps.json. "
+    print(f"{traps} cas écrit(s) à la main chargé(s) depuis evals/ (pièges, phrases, recherches), "
+          f"{corrections} [Modifier], {judged} fiche(s) notée(s). "
           + (f"{sent} cas envoyé(s) aux jeux de données Langfuse." if tracing.client() else
              "Langfuse non configuré : jeu gardé sur ce portable seulement."))
     return 0
@@ -796,23 +803,31 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
         sys.exit(problem)
     families = runner.FAMILIES if args.family == "all" else (args.family,)
     passed = True
+    runs = []
+    embedder = _embedder() if "retrieval" in families else None
     with _connect() as conn:
-        cases.load_traps(conn)
+        cases.load_files(conn)
+        cases.from_corrections(conn)
+        cases.judge_cases(conn)
         for family in families:
-            print(f"\nJeu « {runner.FAMILY_NAMES[family]} », consignes {args.label}… (une fiche prend 7 à 10 minutes)",
-                  flush=True)
+            print(f"\nJeu « {runner.FAMILY_NAMES[family]} », consignes {args.label}…"
+                  + (" (une fiche prend 7 à 10 minutes)" if family == "sheets" else ""), flush=True)
             try:
                 run = runner.evaluate(conn, family, args.label, llm.Models(), limit=args.limit, only=args.case,
-                                      progress=lambda message: print(message, flush=True))
+                                      progress=lambda message: print(message, flush=True), embedder=embedder,
+                                      tuning=args.tuning)
             except LookupError as error:
                 print(error)
                 continue
+            runs.append(run)
             baseline = None if args.label == "production" else (
                 runner.latest(conn, family, "production", like=run.config) or runner.latest(conn, family, "production"))
             print("\n" + runner.report(run, baseline))
             if run.experiment:
                 print(f"Expérience Langfuse : « {run.experiment} » (Datasets → {cases.DATASETS[family]} → Runs)")
             passed &= run.passed
+    if len(runs) > 1:
+        print(runner.overview(runs))
     return 0 if passed else 1
 
 
@@ -824,7 +839,7 @@ def cmd_eval_promote(args: argparse.Namespace) -> int:
     if tracing.client() is None:
         sys.exit("Langfuse non configuré : les étiquettes des consignes sont dans Langfuse.")
     with _connect() as conn:
-        result = runner.promote(conn, dry_run=args.dry_run)
+        result = runner.promote(conn, dry_run=args.dry_run, why=args.why or "")
     for name, (before, version) in result.moved.items():
         print(f"{name} : version {version} {'serait' if args.dry_run else ''} en production (avant : {before})")
     for name, why in result.refused.items():
@@ -832,6 +847,146 @@ def cmd_eval_promote(args: argparse.Namespace) -> int:
     if not result.moved and not result.refused:
         print("Aucune consigne en staging différente de production.")
     return 1 if result.refused else 0
+
+
+def cmd_eval_add_retrieval(args: argparse.Namespace) -> int:
+    """A lesson and the page the search should find (T31). Decide the page first, by reading the
+    lesson and the book: never from what the search proposes."""
+    from skoolathome.evaluation import cases
+
+    with _connect() as conn:
+        try:
+            case = cases.annotate_lesson(conn, args.lesson, args.document, args.page, args.note or "")
+        except LookupError as error:
+            sys.exit(str(error))
+    where = f", p. {args.page}" if args.page else ", n'importe quelle page"
+    print(f"Cas {case.id} ajouté au jeu « recherche » : « {args.document} »{where}.")
+    return 0
+
+
+def cmd_eval_hold(args: argparse.Namespace) -> int:
+    """A case kept for validation only: never seen while tuning a prompt (T32)."""
+    from skoolathome.evaluation import cases
+
+    with _connect() as conn:
+        if not cases.hold(conn, args.id, not args.release):
+            sys.exit(f"Cas inconnu : {args.id}")
+    print(f"{args.id} : " + ("de nouveau utilisable pour la mise au point." if args.release else
+                             "gardé pour la validation (make eval le voit, eval run --tuning non)."))
+    return 0
+
+
+def cmd_eval_add_corrections(args: argparse.Namespace) -> int:
+    """Every [Modifier] made in the parent view becomes a case of the « consignes » set (T31)."""
+    from skoolathome.evaluation import cases
+
+    with _connect() as conn:
+        count = cases.from_corrections(conn)
+    print(f"{count} [Modifier] dans le jeu « consignes »" + (" : rien à ajouter." if not count else "."))
+    return 0
+
+
+def cmd_eval_export(args: argparse.Namespace) -> int:
+    """The reference set, every prompt version and the journal, in data/evals/<date>/ (T32)."""
+    from skoolathome.evaluation import changes
+
+    with _connect() as conn:
+        folder = changes.export(conn, Path(args.to))
+    print(f"Exporté dans {folder} : cases.json, prompts.json, changes.json, runs.json. "
+          "Données de ton fils : hors du dépôt, à garder dans ta sauvegarde.")
+    return 0
+
+
+def cmd_eval_restore(args: argparse.Namespace) -> int:
+    """An export back into the local set and an empty Langfuse (T32)."""
+    from skoolathome.evaluation import changes
+
+    with _connect() as conn:
+        result = changes.restore(conn, Path(args.folder))
+    print(f"{result['cases']} cas repris ({result['synced']} envoyés aux jeux Langfuse), "
+          f"{result['prompt_versions']} versions de consignes recréées.")
+    return 0
+
+
+def cmd_prompt_promote(args: argparse.Namespace) -> int:
+    """`prompt promote <name> <version>`: refused without a passing make eval with that version (T32)."""
+    from skoolathome.agent import tracing
+    from skoolathome.evaluation import changes
+
+    if tracing.client() is None:
+        sys.exit("Langfuse non configuré : les étiquettes des consignes sont dans Langfuse.")
+    with _connect() as conn:
+        problem = changes.promote(conn, args.name, args.version, args.why or "", dry_run=args.dry_run)
+    if problem:
+        print(f"{args.name} v{args.version} : refusée, {problem}")
+        return 1
+    print(f"{args.name} v{args.version} {'peut passer' if args.dry_run else 'est en production'}. "
+          f"Retour arrière : skoolathome prompt rollback {args.name}")
+    return 0
+
+
+def cmd_prompt_rollback(args: argparse.Namespace) -> int:
+    """`prompt rollback <name>`: production back on the previous version, in one command (T32)."""
+    from skoolathome.agent import tracing
+    from skoolathome.evaluation import changes
+
+    if tracing.client() is None:
+        sys.exit("Langfuse non configuré : les étiquettes des consignes sont dans Langfuse.")
+    with _connect() as conn:
+        problem, version = changes.rollback(conn, args.name, args.why or "", args.to)
+    if problem:
+        sys.exit(f"{args.name} : {problem}")
+    print(f"{args.name} : la version {version} est de nouveau en production (noté dans le journal).")
+    return 0
+
+
+def cmd_changes(args: argparse.Namespace) -> int:
+    """The journal of the agent's changes (T32), the latest first."""
+    from skoolathome.evaluation import changes
+
+    with _connect() as conn:
+        if args.record_config:
+            for part in changes.record_config(conn):
+                print(f"noté : {part}")
+        rows = changes.journal(conn, args.limit)
+        watched = {c["id"]: c["compared"] for c in changes.recent(conn, date.today())}
+    if not rows:
+        print("Journal vide : il commence à la prochaine soirée (configuration) ou à la première promotion.")
+    for row in rows:
+        runs = row["eval"].get("runs") or []
+        tested = (" · make eval " + ", ".join(f"{r['family']} {'OK' if r['passed'] else 'KO'}" for r in runs)) if runs else ""
+        print(f"{row['id']:>4}  {row['at']:%d/%m %H:%M}  {row['kind']:<8} {row['name']:<22} {row['before'] or '—'} → "
+              f"{row['after']}{tested}")
+        if row["why"]:
+            print(f"      pourquoi : {row['why'][:150]}")
+        if row["id"] in watched:
+            before, after = watched[row["id"]]["before"], watched[row["id"]]["after"]
+            print(f"      depuis : {after['sheets']} fiche(s), réussite {before['success']} → {after['success']}, "
+                  f"réponses fausses {before['wrong_answers']} → {after['wrong_answers']}")
+        if row["command"]:
+            print(f"      annuler : {row['command']}")
+    return 0
+
+
+def cmd_difficulty(args: argparse.Namespace) -> int:
+    """The target difficulty of each subject, and why (T33)."""
+    from skoolathome import summary
+    from skoolathome.rules import calibration
+    from skoolathome.subjects import label
+
+    with _connect() as conn:
+        student = summary.latest_student(conn)
+        levels = calibration.levels(conn, student) if student else {}
+    if not levels:
+        print("Aucune réponse en mode seul sur les fiches de l'agent : difficulté de départ partout (2).")
+    for code, found in sorted(levels.items()):
+        rate = f"{found.rate:.0%} sur les 10 dernières" if found.rate is not None else "moins de 10 réponses"
+        state = found.level if found.calibrated else f"{found.level} (pas encore transmise)"
+        print(f"{label(code):<22} difficulté {state}  · {found.answers} réponses, {rate}")
+        for change in found.changes[-3:]:
+            when = f" le {change.at:%d/%m}" if change.at else ""
+            print(f"      {change.before} → {change.after}{when} ({change.rate:.0%} à la réponse {change.answer})")
+    return 0
 
 
 def cmd_eval_recall(args: argparse.Namespace) -> int:
@@ -920,6 +1075,10 @@ def cmd_explain(args: argparse.Namespace) -> int:
     hour = datetime.now().hour
     if not args.now and not EXPLAIN_HOURS[0] <= hour < EXPLAIN_HOURS[1]:
         return 0  # the night: nobody is waiting
+    sessions = _api_sessions()
+    if sessions is None:
+        return 1
+    _send_home_if_pending(sessions)  # no model needed: even while the evening runs
     with locks.model(wait=False) as free:
         if not free:
             print("Le traitement du soir utilise le modèle : les explications attendront le prochain passage.")
@@ -927,9 +1086,6 @@ def cmd_explain(args: argparse.Namespace) -> int:
         problem = _preflight()
         if problem:
             print(problem)
-            return 1
-        sessions = _api_sessions()
-        if sessions is None:
             return 1
         with sessions() as client:
             done = explain.process(_connect, client, llm.Models(),
@@ -940,6 +1096,47 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 
 EXPLAIN_HOURS = (7, 22)  # when the timer asks the queue; --now for any hour
+
+
+def _send_home_if_pending(sessions) -> None:
+    """The home page, when a collection (or a sheet) came since it last went online: e.g. the API
+    was not deployed yet when the evening ran. One signature, only then."""
+    from skoolathome import home, summary
+
+    with _connect() as conn:
+        if not home.pending(conn):
+            return
+        student = summary.latest_student(conn)
+        if student is None:
+            return
+        try:
+            with sessions() as client:
+                home.send(conn, client, student, date.today())
+            print(f"{datetime.now():%H:%M}  Page d'accueil mise en ligne.", flush=True)
+        except Exception as error:  # noqa: BLE001  (tried again at the next pass)
+            print(f"{datetime.now():%H:%M}  Page d'accueil non envoyée : {str(error)[:200]}", flush=True)
+
+
+def cmd_home(args: argparse.Namespace) -> int:
+    """The PWA's home page, from the local database: what comes next, the latest grades, the sheets
+    to do. --send puts it online now (one signature, no call to École Directe)."""
+    from skoolathome import home, summary
+
+    today = _today(args)
+    with _connect() as conn:
+        student = summary.latest_student(conn)
+        if student is None:
+            sys.exit("Aucun élève connu : lance d'abord une collecte.")
+        page = home.compute(conn, student, today)
+    print(page.model_dump_json(indent=2) if args.json else home.describe(page, today))
+    if args.send:
+        sessions = _api_sessions()
+        if sessions is None:
+            return 1
+        with _connect() as conn, sessions() as client:
+            home.send(conn, client, student, today)
+        print("\nPage d'accueil mise en ligne.")
+    return 0
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -991,17 +1188,12 @@ def cmd_rules_status(args: argparse.Namespace) -> int:
 
 def _material_query(conn, lesson_id: str | None, text: str | None) -> tuple[str, str | None]:
     """(text to search with, subject) for a lesson id, or a free text."""
-    if text:
-        return text, None
-    row = conn.execute("SELECT content, subject_code, day FROM school.lessons WHERE source_id = %s", (lesson_id,)).fetchone()
-    if row is None:
-        sys.exit(f"Séance inconnue : {lesson_id}")
-    content, subject, day = row
-    if not content.strip():
-        homework = conn.execute("SELECT string_agg(text, ' ') FROM school.homework WHERE subject_code = %s AND given_on = %s",
-                                (subject, day)).fetchone()[0]
-        content = homework or ""
-    return content, subject
+    from skoolathome.evaluation import retrieval
+
+    try:
+        return retrieval.query(conn, lesson_id, text)
+    except LookupError as error:
+        sys.exit(str(error).capitalize())
 
 
 def cmd_material_index(args: argparse.Namespace) -> int:
@@ -1060,43 +1252,32 @@ def cmd_material_search(args: argparse.Namespace) -> int:
 
 
 def cmd_material_eval(args: argparse.Namespace) -> int:
-    """Recall@3 on the cases of evals/retrieval/cases.json: the right page among the first three (T18, T31)."""
-    from skoolathome.material import search
-
+    """Recall@3 of the « recherche » set: the right page among the first three (T18, T31). The same
+    measure as `make eval`, without the rest: evals/retrieval/cases.json, the lessons annotated with
+    `eval add-retrieval`, and those whose teacher attached a PDF (T25)."""
     from skoolathome.evaluation import cases as reference
+    from skoolathome.evaluation import retrieval
 
-    cases = json.loads(Path(args.cases).read_text()).get("cases", [])
-    with _connect() as conn:  # plus the lessons with a PDF attached by their teacher (T25)
-        cases += [{"lesson": c.input["lesson"], "expected": c.expected["documents"],
-                   "note": f"pièce jointe, séance {c.input['lesson']}"} for c in reference.load(conn, "retrieval")]
-    if not cases:
-        sys.exit(f"Aucun cas dans {args.cases} : ajoute-en (voir tmp/T18-depot-manuel-index.md).")
     embedder = _embedder()
     if embedder is None:
         return 1
-    found = 0
-
-    def matches(expected: dict, hit, documents: dict) -> bool:
-        """The right document, and the right page when one is expected (an attachment: any page)."""
-        source_ref, title = documents.get(hit.document_id, ("", ""))
-        if expected.get("page") is not None and expected["page"] != hit.page:
-            return False
-        if expected.get("source_ref"):
-            return source_ref == expected["source_ref"].lower()
-        return expected["document"].lower() in (source_ref, title)
-
     with _connect() as conn:
-        documents = {row[0]: (row[1].lower(), row[2].lower()) for row in conn.execute(
-            "SELECT id, source_ref, title FROM material.documents").fetchall()}
-        for case in cases:
-            query, subject = _material_query(conn, case.get("lesson"), case.get("query"))
-            hits = search.similar_pages(conn, embedder.embed([query])[0], subject, limit=search.TOP_PAGES)
-            ok = any(matches(expected, hit, documents) for expected in case["expected"] for hit in hits)
-            found += ok
-            print(f"{'✓' if ok else '✗'} {case.get('note') or case.get('lesson') or case.get('query')[:40]} : "
-                  + ", ".join(f"{h.label} ({h.score:.2f})" for h in hits))
-    print(f"\nRappel@3 : {found}/{len(cases)} ({found / len(cases):.0%}), seuil visé 90 %")
-    return 0
+        reference.load_files(conn)
+        found = reference.load(conn, "retrieval")
+        if not found:
+            sys.exit("Aucun cas « recherche » : skoolathome eval add-retrieval <séance> --document … --page …")
+        searcher, known = retrieval.Searcher(conn, embedder), retrieval.documents(conn)
+        if searcher.in_memory:
+            print(f"Index fait avec {', '.join(searcher.indexed)} : pages recalculées en mémoire avec {embedder.model}.")
+        good = 0
+        for case in found:
+            output = retrieval.run_case(conn, searcher, case.input)
+            ok = retrieval.measure(conn, output, case.expected, known)["retrieval_recall"] == 1.0
+            good += ok
+            hits = ", ".join(f"{h['label']} ({h['score']:.2f})" for h in output["hits"]) or output.get("error", "rien")
+            print(f"{'✓' if ok else '✗'} {case.metadata.get('note') or case.id} : {hits}")
+    print(f"\nRappel@3 : {good}/{len(found)} ({good / len(found):.0%}), seuil 90 %")
+    return 0 if good / len(found) >= 0.9 else 1
 
 
 def cmd_sheets_list(args: argparse.Namespace) -> int:
@@ -1525,6 +1706,8 @@ def main() -> None:
     collect.add_argument("--student", type=int, help="student id (default: the only one with a homework diary)")
     collect.add_argument("--replay", metavar="DIR", help="read responses saved by the probe instead of calling École Directe")
     collect.add_argument("--today", help="pretend today is this date (YYYY-MM-DD), for replays and tests")
+    collect.add_argument("--no-download", action="store_true",
+                         help="list the attached files, download none (until `ed download` was checked by hand)")
     collect.set_defaults(run=cmd_collect)
 
     summary = commands.add_parser("summary", help="upcoming tests and lessons without content")
@@ -1626,6 +1809,23 @@ def main() -> None:
     push_.add_argument("names", nargs="*", help="default: every prompt")
     push_.add_argument("--label", default="production", choices=["production", "staging"])
     push_.set_defaults(run=cmd_prompt_push)
+    promote_prompt = prompt.add_parser("promote", help="a version to production, if its make eval passed (T32)")
+    promote_prompt.add_argument("name")
+    promote_prompt.add_argument("version", type=int)
+    promote_prompt.add_argument("--why", help="the problem it answers (kept in the journal)")
+    promote_prompt.add_argument("--dry-run", action="store_true")
+    promote_prompt.set_defaults(run=cmd_prompt_promote)
+    rollback_ = prompt.add_parser("rollback", help="production back on the previous version (T32)")
+    rollback_.add_argument("name")
+    rollback_.add_argument("--to", type=int, help="this version rather than the previous one")
+    rollback_.add_argument("--why")
+    rollback_.set_defaults(run=cmd_prompt_rollback)
+
+    changes_ = commands.add_parser("changes", help="the journal of the agent's changes (T32)")
+    changes_.add_argument("--limit", type=int, default=30)
+    changes_.add_argument("--record-config", action="store_true", help="note a change of models.toml now")
+    changes_.set_defaults(run=cmd_changes)
+    commands.add_parser("difficulty", help="the target difficulty of each subject (T33)").set_defaults(run=cmd_difficulty)
 
     publish = commands.add_parser("publish", help="publish sheets in one batch signed by the bunker (NIP-98)")
     publish.add_argument("files", nargs="+")
@@ -1650,6 +1850,12 @@ def main() -> None:
     explain_.add_argument("--verbose", action="store_true")
     explain_.set_defaults(run=cmd_explain)
 
+    home_ = commands.add_parser("home", help="the PWA's home page: next lessons and tests, grades, sheets to do")
+    home_.add_argument("--today")
+    home_.add_argument("--json", action="store_true", help="what is sent, as JSON")
+    home_.add_argument("--send", action="store_true", help="put it online now (one signature)")
+    home_.set_defaults(run=cmd_home)
+
     review = commands.add_parser("review", help="the weekly review: indicators, alerts, sheets to annotate (T24)")
     review.add_argument("--today")
     review.add_argument("--send", action="store_true", help="send it now to the parent devices")
@@ -1660,13 +1866,35 @@ def main() -> None:
     run_eval = evals.add_parser("run", help="the graphs on the reference set; exit 1 below a blocking threshold")
     run_eval.add_argument("--label", default="staging", choices=["staging", "production"],
                           help="which prompts: the candidate (staging) or the baseline (production)")
-    run_eval.add_argument("--family", default="all", choices=["all", "sheets", "tests"])
+    run_eval.add_argument("--family", default="all",
+                          choices=["all", "sheets", "tests", "retrieval", "instructions", "judge", "plan"])
     run_eval.add_argument("--limit", type=int, help="the first N cases only (a quick look, not a decision)")
     run_eval.add_argument("--case", action="append", help="this case only (repeatable)")
+    run_eval.add_argument("--tuning", action="store_true",
+                          help="while tuning a prompt: without the cases kept for validation (eval hold)")
     run_eval.set_defaults(run=cmd_eval_run)
     promote_ = evals.add_parser("promote", help="staging prompts to production, if their make eval passed")
     promote_.add_argument("--dry-run", action="store_true")
+    promote_.add_argument("--why", help="the problem it answers: the review, the reports (kept in the journal)")
     promote_.set_defaults(run=cmd_eval_promote)
+    add_retrieval = evals.add_parser("add-retrieval", help="a lesson and the page the search should find (T31)")
+    add_retrieval.add_argument("lesson", help="the lesson id (skoolathome material search --lesson … shows nothing first)")
+    add_retrieval.add_argument("--document", required=True, help="its title, as material list shows it")
+    add_retrieval.add_argument("--page", type=int, help="the printed page; none: any page of the document")
+    add_retrieval.add_argument("--note")
+    add_retrieval.set_defaults(run=cmd_eval_add_retrieval)
+    evals.add_parser("add-corrections", help="every [Modifier] of the parent view into the « consignes » set"
+                     ).set_defaults(run=cmd_eval_add_corrections)
+    hold_ = evals.add_parser("hold", help="keep a case for validation only, never for tuning (T32)")
+    hold_.add_argument("id")
+    hold_.add_argument("--release", action="store_true", help="use it for tuning again")
+    hold_.set_defaults(run=cmd_eval_hold)
+    export_ = evals.add_parser("export", help="the sets, every prompt version and the journal, as JSON (T32)")
+    export_.add_argument("--to", default="data/evals")
+    export_.set_defaults(run=cmd_eval_export)
+    restore_ = evals.add_parser("restore", help="an export back: the local set and an empty Langfuse")
+    restore_.add_argument("folder")
+    restore_.set_defaults(run=cmd_eval_restore)
     add_sheet = evals.add_parser("add-sheet", help="a sheet of this laptop becomes a real case, anonymized")
     add_sheet.add_argument("sheet")
     add_sheet.add_argument("--name", action="append", help="a family name to take out (kept for next time)")
@@ -1681,7 +1909,7 @@ def main() -> None:
     add_tests.set_defaults(run=cmd_eval_add_tests)
     evals.add_parser("reports", help="the reports received, to turn into cases").set_defaults(run=cmd_eval_reports)
     list_eval = evals.add_parser("list", help="the cases of the reference set")
-    list_eval.add_argument("--family", choices=["sheets", "tests"])
+    list_eval.add_argument("--family", choices=["sheets", "tests", "retrieval", "instructions", "judge", "explanations"])
     list_eval.set_defaults(run=cmd_eval_list)
     show_eval = evals.add_parser("show", help="a case, as the model will read it")
     show_eval.add_argument("id")
@@ -1767,7 +1995,6 @@ def main() -> None:
     search_.add_argument("--limit", type=int, default=5)
     search_.set_defaults(run=cmd_material_search)
     eval_ = material.add_parser("eval", help="recall@3 on the retrieval cases")
-    eval_.add_argument("--cases", default="evals/retrieval/cases.json")
     eval_.set_defaults(run=cmd_material_eval)
 
     args = parser.parse_args()

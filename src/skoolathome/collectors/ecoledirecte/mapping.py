@@ -147,6 +147,9 @@ def map_grades(response: dict, student_id: str) -> list[Grade]:
             out_of=_decimal(grade.noteSur),
             coefficient=_decimal(grade.coef),
             period=grade.codePeriode,
+            class_average=_decimal(grade.moyenneClasse),
+            class_min=_decimal(grade.minClasse),
+            class_max=_decimal(grade.maxClasse),
         )
         for grade in raw.RawGrades.model_validate(response).data.notes
     ]

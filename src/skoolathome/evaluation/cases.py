@@ -1,7 +1,9 @@
 """The reference set (ARCHITECTURE.md §14.3, T23): real cases anonymized, traps, past reports.
 
-Two families for now: « fiches » (a task and what the model read → a good sheet, or an abstention)
-and « contrôles » (a homework → is a test announced?). T31 adds « recherche » and « consignes ».
+Families: « fiches » (a task and what the model read → a good sheet, or an abstention), « contrôles »
+(a homework → is a test announced?), « recherche » (a lesson → the expected page among the first
+three, T31), « consignes » (a parent's sentence → the rule expected, T31), « correcteur » (a sheet the
+parent annotated → the judge says the same, T33), « explications » (kept, not replayed yet).
 
 The cases live in the local database (agent.eval_cases) and in Langfuse datasets: Langfuse can be
 emptied without losing them, and `make eval` also runs without it.
@@ -9,6 +11,7 @@ emptied without losing them, and `make eval` also runs without it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -26,8 +29,11 @@ from skoolathome.subjects import EXCLUDED_SUBJECTS, label
 
 REPO = Path(__file__).resolve().parents[3]
 TRAPS = REPO / "evals" / "traps.json"
+SENTENCES = REPO / "evals" / "instructions" / "cases.json"  # T21's ten sentences, written by hand
+RETRIEVAL = REPO / "evals" / "retrieval" / "cases.json"     # T18: searches written by hand (no real id)
 DATASETS = {"sheets": "skoolathome-fiches", "tests": "skoolathome-controles", "retrieval": "skoolathome-recherche",
-            "instructions": "skoolathome-consignes", "explanations": "skoolathome-explications"}
+            "instructions": "skoolathome-consignes", "explanations": "skoolathome-explications",
+            "judge": "skoolathome-correcteur"}
 NAMES_SECRET = "names"  # ~/.config/skoolathome/names.json: {"names": ["Léo", …]}, never in the repo
 TITLES = {"m", "mr", "mme", "mlle", "monsieur", "madame", "mademoiselle"}
 PLACEHOLDER = "Camille"  # a name instead of every real one, so the text still reads naturally
@@ -36,8 +42,9 @@ PLACEHOLDER = "Camille"  # a name instead of every real one, so the text still r
 @dataclass
 class Case:
     id: str
-    family: str             # sheets | tests
-    origin: str             # real | trap | report
+    family: str             # sheets | tests | retrieval | instructions | judge | explanations
+    origin: str             # real | trap | report | attachment | proposal | explanation | sentence | correction
+                            # | annotated | annotation
     input: dict
     expected: dict
     metadata: dict = field(default_factory=dict)
@@ -65,6 +72,14 @@ def load(conn: psycopg.Connection, family: str | None = None) -> list[Case]:
     return [Case(*row) for row in rows]
 
 
+def hold(conn: psycopg.Connection, case_id: str, held: bool = True) -> bool:
+    """A case kept for validation only (T32): `make eval` sees it, a tuning run (`--tuning`) does
+    not, so a prompt tuned again and again cannot learn it."""
+    row = conn.execute("UPDATE agent.eval_cases SET metadata = metadata || jsonb_build_object('holdout', %s::boolean), "
+                       "updated_at = now(), synced_at = NULL WHERE id = %s RETURNING id", (held, case_id)).fetchone()
+    return row is not None
+
+
 def load_traps(conn: psycopg.Connection, path: Path = TRAPS) -> int:
     """The traps of evals/traps.json, written by hand: loaded (again) into the reference set."""
     data = json.loads(path.read_text())["cases"]
@@ -72,6 +87,75 @@ def load_traps(conn: psycopg.Connection, path: Path = TRAPS) -> int:
         save(conn, Case(trap["id"], trap["family"], "trap", trap["input"], trap["expected"],
                         {"note": trap.get("note", "")}))
     return len(data)
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()[:10]
+
+
+def load_files(conn: psycopg.Connection) -> int:
+    """Everything written by hand in evals/: the traps, the instruction sentences, the searches."""
+    count = load_traps(conn)
+    for case in json.loads(SENTENCES.read_text())["cases"] if SENTENCES.exists() else []:
+        save(conn, Case(f"sentence-{_digest(case['sentence'])}", "instructions", "sentence",
+                        {"sentence": case["sentence"]}, case["expected"], {"note": case.get("note", "")}))
+        count += 1
+    for case in json.loads(RETRIEVAL.read_text()).get("cases", []) if RETRIEVAL.exists() else []:
+        wanted = {key: case[key] for key in ("lesson", "query") if case.get(key)}
+        save(conn, Case(f"search-{_digest(json.dumps(wanted, sort_keys=True))}", "retrieval", "annotated", wanted,
+                        {"documents": case["expected"]}, {"note": case.get("note", "")}))
+        count += 1
+    return count
+
+
+def from_corrections(conn: psycopg.Connection) -> int:
+    """Each [Modifier] of the parent view (T21) becomes a case of the « consignes » set: the
+    sentence, and the rule the parent saved instead of the one the agent understood (T31)."""
+    from skoolathome.agent.evaluate_instructions import expected_from
+
+    rows = conn.execute("SELECT instruction_id, text, proposed, final FROM agent.instruction_corrections").fetchall()
+    names = private_names(conn) if rows else []
+    for instruction_id, text, proposed, final in rows:
+        save(conn, Case(f"correction-{instruction_id}", "instructions", "correction",
+                        {"sentence": anonymize(text, names)}, expected_from(proposed, final),
+                        {"instruction": instruction_id}))
+    return len(rows)
+
+
+def annotate_lesson(conn: psycopg.Connection, lesson_id: str, document: str, page: int | None, note: str = "") -> Case:
+    """A lesson and the page it should find (T31): decided by the parent before looking at what the
+    search proposes, or the set would reflect the search instead of judging it."""
+    row = conn.execute("SELECT subject_code, day FROM school.lessons WHERE source_id = %s", (lesson_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"séance inconnue : {lesson_id}")
+    known = conn.execute("SELECT 1 FROM material.documents WHERE lower(title) = lower(%s) OR lower(source_ref) = "
+                         "lower(%s)", (document, document)).fetchone()
+    if known is None:
+        raise LookupError(f"document inconnu : « {document} » (skoolathome material list donne les titres)")
+    case = Case(f"lesson-{lesson_id}-{_digest(f'{document}:{page}')}", "retrieval", "annotated", {"lesson": lesson_id},
+                {"documents": [{"document": document, "page": page}]},
+                {"subject": row[0], "day": row[1].isoformat(), "note": note})
+    save(conn, case)
+    return case
+
+
+def judge_cases(conn: psycopg.Connection) -> int:
+    """Each sheet the parent annotated (T24) becomes a case of the « correcteur » set: what the
+    judge read, and the parent's verdict on each question (T33). Anonymized."""
+    rows = conn.execute(
+        "SELECT a.sheet_id, jsonb_object_agg(a.item_id, a.ok), max(a.created_at) FROM feedback.annotations a "
+        "JOIN agent.sheets s ON s.id = a.sheet_id AND s.body IS NOT NULL GROUP BY a.sheet_id").fetchall()
+    names = private_names(conn) if rows else []
+    for sheet_id, verdicts, annotated in rows:
+        try:
+            read, body = model_input(conn, sheet_id)
+        except LookupError:
+            continue
+        save(conn, Case(f"judge-{sheet_id}", "judge", "annotation",
+                        anonymize({"task": read["task"], "sources": read["sources"], "sheet": body}, names),
+                        {"items": verdicts}, {"sheet": sheet_id, "subject": read["task"].get("subject_code", ""),
+                                              "annotated": annotated.isoformat()}))
+    return len(rows)
 
 
 def sync(conn: psycopg.Connection) -> int:

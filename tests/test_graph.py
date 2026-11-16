@@ -106,6 +106,7 @@ class FakeApi:
         self.rules: list[str] = []
         self.reviews: list = []
         self.reports: list[dict] = []
+        self.homes: list = []
 
     @contextmanager
     def __call__(self):
@@ -131,6 +132,10 @@ class FakeApi:
     def report(self, report: dict) -> dict:
         self.reports.append(report)
         return {"push": {"sent": 1}}
+
+    def home(self, page) -> dict:
+        self.homes.append(page)
+        return {"ok": True}
 
 
 def add_lesson(conn, source_id: str, subject_code: str, content: str, day: date = RUN) -> None:
@@ -393,7 +398,8 @@ def test_a_full_evening_collects_syncs_publishes_and_reports(conn, url):
     assert api.published == ["2026-11-13-maths-exercises"]
     assert sheets(conn)["2026-11-13-maths-exercises"][0] == "published"
     assert api.cursors == [0] and conn.execute("SELECT since FROM feedback.cursor").fetchone()[0] == 500
-    assert api.sessions == 3  # feedback, batch, report: one signature each
+    assert api.sessions == 4  # feedback, batch, home page, report: one signature each
+    assert len(api.homes) == 1
     [sent] = api.reports
     assert sent["status"] == "ok" and sent["body"].startswith("OK : 1 fiche.") and "RAM max" in sent["body"]
     assert evening.report["sent"] is True

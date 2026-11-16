@@ -50,6 +50,7 @@ def collect(
     today: date | None = None,
     pause: float = 1.0,
     attachments_root: Path = attachments.ROOT,
+    download: bool = True,
 ) -> RunResult:
     """`conn` must be in autocommit mode: the run log is written even if saving fails."""
     today = today or date.today()
@@ -75,7 +76,7 @@ def collect(
         result.status = "partial" if source.errors else "ok"
         if hasattr(client, "download"):  # in the same session: no second login (T25)
             downloaded = attachments.download_pending(conn, client, result.student_id, root=attachments_root,
-                                                      pause=pause)
+                                                      pause=pause) if download else {}
             result.counts["attachments"] = {**attachments.counts(conn, result.student_id), "new": downloaded,
                                             "unsupported_formats": attachments.unsupported_formats(conn, result.student_id)}
     except TwoFactorRequired:

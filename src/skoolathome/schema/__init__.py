@@ -90,6 +90,9 @@ class Grade(Model):
     out_of: Decimal | None
     coefficient: Decimal | None
     period: str
+    class_average: Decimal | None = None  # the class's average, lowest and highest grade on this test
+    class_min: Decimal | None = None
+    class_max: Decimal | None = None
 
 
 class SchoolSnapshot(Model):

@@ -36,6 +36,7 @@ from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 from rapidfuzz import fuzz
 
+from skoolathome import home
 from skoolathome.agent import (
     config,
     draft,
@@ -55,10 +56,11 @@ from skoolathome.agent.checkpoints import checkpointer
 from skoolathome.agent.embeddings import EmbeddingError
 from skoolathome.agent.llm import ModelError
 from skoolathome.collectors.ecoledirecte.attachments import AttachmentSource, lesson_pages
+from skoolathome.evaluation import cases as eval_cases
+from skoolathome.evaluation import changes, weekly
 from skoolathome.evaluation.cases import retrieval_cases
-from skoolathome.evaluation import weekly
 from skoolathome.material import index, search
-from skoolathome.rules import assessments
+from skoolathome.rules import assessments, calibration
 from skoolathome.rules import inputs as plan_inputs
 from skoolathome.rules import plan as planning
 from skoolathome.rules import store as rules_store
@@ -270,9 +272,24 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             try:
                 with connect() as conn:  # on each sheet's trace, with what an earlier evening could not send
                     result["unhelpful_cases"] = explain.unhelpful_cases(conn)  # « Toujours pas » (T29)
+                    result["judge_cases"] = eval_cases.judge_cases(conn)       # the parent's annotations (T33)
+                    result["corrections"] = eval_cases.from_corrections(conn)  # every [Modifier] (T31)
                     result["scores"] = scores.send(conn)
             except Exception as error:  # noqa: BLE001  (Langfuse stopped: sent another evening)
                 result["scores"] = {"error": str(error)[:200]}
+            if services.api is not None:
+                try:  # a wrong answer on a version promoted less than two weeks ago: the parent knows at once (T32)
+                    with connect() as conn:
+                        found = changes.alerts(conn)
+                        if found:
+                            with services.api() as client:
+                                client.notify(found[0]["title"], found[0]["body"] if len(found) == 1 else
+                                              f"{len(found)} réponses signalées fausses. {found[0]['body']}"[:400],
+                                              url="/#/review", tag="change-alert")
+                            changes.notified(conn, found)
+                            result["change_alerts"] = len(found)
+                except Exception as error:  # noqa: BLE001  (tried again tomorrow: not marked as sent)
+                    result["change_alerts"] = f"non envoyées : {str(error)[:150]}"
             output(span, result, warning="error" in result)
         say(f"Retours de la tablette : non récupérés ({result['error'][:100]})" if "error" in result else
             f"Retours de la tablette : {result['attempts']} réponse(s), {result['reports']} signalement(s), "
@@ -396,17 +413,24 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             tests = [{"subject": t.subject, "subject_code": t.subject_code, "day": t.day.isoformat(), "reason": t.reason}
                      for t in planning.unique_tests(known.tests) if t.day <= week]
             used = [f"{rule.id} v{rule.version}" for rule in rules]
+            calibrated = calibration.levels(conn, student)  # the target difficulty, per subject (T33)
             output(span, {
                 "rules": used,
+                "difficulty": {code: c.level for code, c in calibrated.items() if c.calibrated},
                 "tasks": [{"id": t.id, "rule": t.rule_id, "format": t.kind, "visible_from": t.visible_from.isoformat(),
                            "minutes": t.target_minutes, "sources": [l.key for l in t.lessons]} for t in result.tasks],
                 "skipped": result.skipped, "done": result.done, "tests": tests,
             })
+        tasks = [t.as_json() for t in result.tasks]
+        for task in tasks:
+            level = calibrated.get(task["subject_code"])
+            if level is not None and level.calibrated:
+                task["difficulty"] = level.level
         say(f"Plan : {len(result.tasks)} fiche(s) à faire ce soir, {len(result.skipped)} tâche(s) sautée(s), "
             f"{len(result.done)} déjà faite(s)")
         for task in result.tasks:
             say(f"  - {task.id} ({task.kind}, visible le {fr_day(task.visible_from)})")
-        return {"tasks": [t.as_json() for t in result.tasks], "tests": tests,
+        return {"tasks": tasks, "tests": tests,
                 "plan": {"skipped": result.skipped, "done": result.done, "rules": used}}
 
     def retrieve(state: EveningState) -> dict:
@@ -631,6 +655,11 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                             weekly.save(conn, weekly.compute(conn, state["student_id"], run_day))
                         except Exception as error:  # noqa: BLE001
                             review_error = str(error)[:200]
+                        try:  # T32: the sets, the prompts and the journal, once a week, in data/evals/
+                            if not changes.exported_this_week(day=run_day):
+                                changes.export(conn, day=run_day)
+                        except Exception as error:  # noqa: BLE001
+                            review_error += f" export : {str(error)[:150]}"
                     review = weekly.unsent(conn)
                 sheets = [Sheet.model_validate(row[0]) for row in rows]
                 if not sheets and not answered and not updates and not rules and review is None:
@@ -657,12 +686,22 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                                   **({"review_error": review_error} if review_error else {})}
                     except Exception as error:  # noqa: BLE001  (sent tomorrow with the next batch)
                         result = {"error": str(error)[:300], "count": 0}
+                if state.get("student_id"):
+                    # The PWA's home page, its own call: an API without it never holds back the
+                    # sheets. Not sent: the next `skoolathome explain` pass tries again.
+                    try:
+                        with connect() as conn, services.api() as client:
+                            home.send(conn, client, state["student_id"], run_day)
+                        result["home"] = "sent"
+                    except Exception as error:  # noqa: BLE001
+                        result["home"] = f"non envoyée : {str(error)[:200]}"
             output(span, result, warning="error" in result)
         if "error" in result:
             say(f"Publication en échec : {result['error'][:150]}")
         elif "count" in result:
             say(f"Publication : {result['count']} fiche(s) envoyée(s)"
-                + (f", bilan de la semaine {result['review']}" if result.get("review") else ""))
+                + (f", bilan de la semaine {result['review']}" if result.get("review") else "")
+                + (f", page d'accueil {result['home']}" if result.get("home") else ""))
         return {"published": result}
 
     def end_report(state: EveningState) -> dict:
@@ -846,6 +885,8 @@ def _context(task: dict, sources: dict[str, str], overview: str = "", labels: di
     if task.get("focus"):
         lines.append("Notions ratées récemment, à reprendre en priorité avec au moins une question sur chacune : "
                      + " ; ".join(task["focus"]) + ". Écris le nom de la notion dans `concept`.")
+    if task.get("difficulty") and task["kind"] in ("exercises", "test_revision"):
+        lines.append(calibration.instruction(task["difficulty"], task["subject"]))  # T33
     if task.get("style") == "oral_quiz":
         lines.append("Style : comme une interrogation orale en début de cours, questions directes, "
                      "réponses de quelques mots.")

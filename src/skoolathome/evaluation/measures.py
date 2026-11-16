@@ -8,6 +8,11 @@ Blocking, at 100 %: a candidate below one of them is not promoted.
     traps            abstention correcte: the traps (empty lesson, instructions only, page out of the
                      subject) give no sheet, or no question on the trap
     test_recall      contrôles détectés: every homework announcing a test is detected
+    plan_tests       the evening plan's tests (T19): every one passes (T31)
+Blocking below their own threshold:
+    retrieval_recall recall@3 of the search, 90 %: the expected page among the first three (T31)
+    instructions_correct  the parent's sentences understood field by field, 90 % (T31)
+    judge_agreement  the judge says what the parent said on the annotated sheets, 80 % (T33)
 Tracked, not blocking: sheets produced on real cases, reports fixed, false alarms, generations.
 """
 
@@ -27,12 +32,17 @@ from skoolathome.rules import assessments
 from skoolathome.rules.inputs import MODEL_CONFIDENCE
 from skoolathome.subjects import fr_day
 
-THRESHOLDS = {"answers_correct": 1.0, "grounded": 1.0, "traps": 1.0, "test_recall": 1.0}
+THRESHOLDS = {"answers_correct": 1.0, "grounded": 1.0, "traps": 1.0, "test_recall": 1.0, "plan_tests": 1.0,
+              "retrieval_recall": 0.9, "instructions_correct": 0.9, "judge_agreement": 0.8}
 NAMES = {
     "answers_correct": "Corrigés justes",
     "grounded": "Ancrage dans le cours",
     "traps": "Abstention correcte (pièges)",
     "test_recall": "Contrôles détectés (rappel)",
+    "plan_tests": "Tests du plan du soir",
+    "retrieval_recall": "Recherche : rappel@3",
+    "instructions_correct": "Consignes bien comprises",
+    "judge_agreement": "Accord correcteur / parent",
     "produced": "Fiches produites (cas réels)",
     "reports_fixed": "Signalements corrigés",
     "false_alarms": "Fausses alertes de contrôle",
@@ -133,6 +143,34 @@ def measure_test(output: dict, expected: dict) -> dict[str, float | None]:
     return {"false_alarms": float(output["detected"])}
 
 
+# --------------------------------------------------------------------------- judge (T33)
+
+
+def judge_sheet(models: Any, prompt: Prompt, case_input: dict) -> dict:
+    """The judge alone on a sheet the parent annotated: its verdict, question by question."""
+    from skoolathome.agent.judge import CRITERIA
+    from skoolathome.schema.sheet import Sheet
+
+    sheet = Sheet.model_validate(case_input["sheet"])
+    judged = making.judge_once(models, prompt, case_input["task"], sheet, case_input["sources"])
+    if judged.verdict is None:
+        return {"verdict": None, "error": judged.error}
+    return {"verdict": {item.id: all(getattr(item, c) for c in CRITERIA) for item in judged.verdict.items},
+            "problems": {item.id: item.problem for item in judged.verdict.items if item.problem}}
+
+
+def measure_judge(output: dict, expected: dict) -> dict[str, float | None]:
+    """Questions where the judge says what the parent said. A judge that cannot answer agrees on
+    nothing; a question it skipped counts as passed, as in the evening (agent/judge.py)."""
+    wanted = expected.get("items") or {}
+    if not wanted:
+        return {}
+    if output.get("verdict") is None:
+        return {"judge_agreement": 0.0}
+    same = sum(1 for item, ok in wanted.items() if output["verdict"].get(item, True) == ok)
+    return {"judge_agreement": round(same / len(wanted), 4)}
+
+
 # ------------------------------------------------------------------------- the run
 
 
@@ -151,6 +189,15 @@ def failed_thresholds(metrics: dict[str, dict]) -> list[str]:
 
 
 def prompts_of(family: str) -> list[str]:
+    """The prompts a family measures: a candidate version of one of them needs that family's run."""
     if family == "tests":
         return [formats.ASSESSMENT_PROMPT]
+    if family == "instructions":
+        from skoolathome.agent.instructions import INTERPRET_PROMPT
+
+        return [INTERPRET_PROMPT]
+    if family == "judge":
+        return [formats.JUDGE_PROMPT]
+    if family in ("retrieval", "plan"):
+        return []
     return sorted({shape.prompt for shape in formats.FORMATS.values()} | {formats.JUDGE_PROMPT})

@@ -14,6 +14,7 @@ from nostr_sdk import Event
 from skoolathome import secrets
 from skoolathome.publish.nip46 import NIP98_KIND, authorization_header, nip98_tags
 from skoolathome.schema.explanation import ExplanationAnswer
+from skoolathome.schema.home import Home
 from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
 from skoolathome.schema.request import RequestUpdate
 from skoolathome.schema.review import WeeklyReview
@@ -96,6 +97,14 @@ class ApiClient:
 
     def answer_explanation(self, explanation_id: str, answer: ExplanationAnswer) -> dict:
         return self._call("POST", f"/api/agent/explanations/{explanation_id}", answer.model_dump(mode="json"))
+
+    def home(self, page: Home) -> dict:
+        """The home page of the PWA (what comes next, grades, sheets to do): replaces the previous one."""
+        return self._call("PUT", "/api/agent/home", page.model_dump(mode="json"))
+
+    def notify(self, title: str, body: str, url: str = "/", tag: str = "agent") -> dict:
+        """A notification to the parent devices (T32: a wrong answer on a version just promoted)."""
+        return self._call("POST", "/api/agent/notify", {"title": title, "body": body, "url": url, "tag": tag})
 
     def report(self, report: dict) -> dict:
         """The end-of-evening report: stored online and pushed to the parent devices."""

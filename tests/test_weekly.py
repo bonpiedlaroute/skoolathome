@@ -97,6 +97,6 @@ def test_the_friday_evening_sends_the_review_with_its_batch(conn):
     api = FakeApi()
     run_evening(url, FakeModels(), api=api, publish=True)
     [review] = api.reviews
-    assert review.week == "2026-W46" and api.sessions == 3  # in the batch: no signature more
+    assert review.week == "2026-W46" and api.sessions == 4  # in the batch: no signature more (the 4th: home page)
     run_evening(url, FakeModels(), api=api, publish=True, restart=True)
     assert len(api.reviews) == 1  # once a week

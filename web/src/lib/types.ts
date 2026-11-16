@@ -192,3 +192,82 @@ export interface Explanation {
   answered_at: string | null;
   helped: boolean | null;
 }
+
+/** The home page (schema/home.py): computed by the laptop after each collection, all dated. */
+export interface HomeSlot {
+  day: string;
+  starts: string; // « 08:20 »
+  ends: string;
+  subject_code: string;
+  subject: string;
+  room: string;
+  cancelled: boolean;
+}
+
+export interface HomeTest {
+  day: string;
+  subject_code: string;
+  subject: string;
+  what: string; // what the teacher wrote
+  reason: "flag" | "keywords" | "model";
+}
+
+export interface HomeGrade {
+  day: string;
+  kind: string;
+  title: string;
+  value: string; // as École Directe shows it: « 15,5 », « Abs »
+  score: number | null;
+  out_of: number | null;
+  coefficient: number | null;
+  class_average: number | null;
+  class_min: number | null;
+  class_max: number | null;
+}
+
+export interface HomeSubjectGrades {
+  subject_code: string;
+  subject: string;
+  grades: HomeGrade[]; // the latest first
+}
+
+export interface HomeLesson {
+  day: string;
+  points: string[];
+  attachment: boolean;
+}
+
+export interface HomeSuggestion {
+  subject_code: string;
+  subject: string;
+  reason: "test" | "lesson";
+  for_day: string;
+  lessons: HomeLesson[];
+  sheet_ids: string[];
+  request: { kind: RequestKind; focus: string };
+}
+
+export interface HomePage {
+  generated_at: string;
+  collected_at: string | null;
+  slots: HomeSlot[];
+  holidays: string[];
+  tests: HomeTest[];
+  grades: HomeSubjectGrades[];
+  suggestions: HomeSuggestion[];
+}
+
+export interface HomeSheet {
+  id: string;
+  title: string;
+  items: number;
+  answered: number;
+  correct: number;
+}
+
+export interface HomeData {
+  home: HomePage | null;
+  received_at?: string;
+  sheets?: Record<string, HomeSheet>;
+  requested?: string[]; // subjects with a sheet asked for and not made yet
+}

@@ -59,3 +59,48 @@ def run(conn: psycopg.Connection, cases: list[dict], student_id: str | None, tod
         say(f"{'✓' if not problems else '✗'} {case['sentence'][:80]}"
             + "".join(f"\n    {p}" for p in problems))
     return results
+
+
+# ------------------------------------------------------------------- in make eval (T31)
+
+COMPARED = ("subject", "trigger", "scope", "format", "n_lessons", "max_minutes", "items", "offsets_days",
+            "style", "suggested_mode", "target_minutes", "replaces_default")
+
+
+def interpret(models: Any, prompt: prompts.Prompt, known_: Any, existing: dict, sentence: str, today: date) -> dict:
+    """One sentence, read by the model and resolved by the code: {rule} or {question}, or {error}."""
+    try:
+        found = resolve(read(models, prompt, known_, sentence, "", today), known_, sentence=sentence, today=today,
+                        existing=existing)
+    except ModelError as error:
+        return {"rule": None, "question": "", "error": f"le modèle n'a pas répondu : {str(error)[:150]}"}
+    return {"rule": found.rule.model_dump(mode="json") if found.rule else None, "question": found.question}
+
+
+def problems(expected: dict, output: dict) -> list[str]:
+    """What differs, field by field: only the fields the case gives."""
+    if output.get("error"):
+        return [output["error"]]
+    if expected.get("question"):
+        return [] if output.get("question") else [f"une question était attendue, pas la règle {output['rule']['id']}"]
+    if output.get("rule") is None:
+        return [f"question au lieu d'une règle : {output.get('question', '')}"]
+    rule, found = output["rule"], []
+    for key, wanted in expected.items():
+        if key == "offsets_contains":
+            if wanted not in rule["offsets_days"]:
+                found.append(f"offsets_days : {rule['offsets_days']}, sans {wanted}")
+        elif rule.get(key) != wanted:
+            found.append(f"{key} : {rule.get(key)!r} au lieu de {wanted!r}")
+    return found
+
+
+def expected_from(proposed: dict, final: dict) -> dict:
+    """A [Modifier]: the rule the parent saved, on the fields that say what the rule does, plus
+    every field the parent changed."""
+    keys = {"subject", "trigger", "scope", "format"} | {k for k in COMPARED if proposed.get(k) != final.get(k)}
+    if final.get("scope") == "last_n_lessons":
+        keys.add("n_lessons")
+    if final.get("trigger") == "load_limit":
+        keys.add("max_minutes")
+    return {k: final.get(k) for k in COMPARED if k in keys}

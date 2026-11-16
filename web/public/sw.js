@@ -84,7 +84,7 @@ self.addEventListener("push", (event) => {
     data = { body: event.data ? event.data.text() : "" };
   }
   event.waitUntil(
-    self.registration.showNotification(data.title || "Révisions", {
+    self.registration.showNotification(data.title || "Skoolathome", {
       body: data.body || "",
       tag: data.tag,
       icon: "/icon-192.png",

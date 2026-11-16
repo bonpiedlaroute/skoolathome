@@ -22,6 +22,7 @@ from skoolathome.api.auth import Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
 from skoolathome.schema.explanation import ExplanationAnswer, ExplanationRequest, Helped
+from skoolathome.schema.home import Home
 from skoolathome.schema.instruction import (
     ALLOWED_REPLIES,
     InstructionReply,
@@ -108,6 +109,13 @@ class EveningReport(Body):
     title: str = Field(min_length=1, max_length=120)
     body: str = Field(min_length=1, max_length=600)
     details: dict = {}
+
+
+class AgentNotice(Body):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=400)
+    url: str = Field(default="/", max_length=200, pattern=r"^/")
+    tag: str = Field(default="agent", max_length=64)
 
 
 class PushKeys(Body):
@@ -554,6 +562,51 @@ def answer_explanation(
         "body": f"{subject} : « {prompt[:80]} »" if body.status == "done" else f"{subject} : {body.reason[:160]}",
         "url": f"/#/explanation/{explanation_id}", "tag": f"explanation-{explanation_id}",
     })
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ home page
+
+
+@app.put("/api/agent/home")
+def put_home(body: Home, agent: nip98.Agent = Depends(nip98.require_agent),
+             conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """The home page computed by the laptop after a collection: it replaces the previous one."""
+    conn.execute("INSERT INTO home (id, body) VALUES (1, %s) ON CONFLICT (id) DO UPDATE "
+                 "SET body = EXCLUDED.body, received_at = now()", (Jsonb(body.model_dump(mode="json")),))
+    return {"ok": True}
+
+
+@app.get("/api/home")
+def get_home(device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """The page, with what changed online since: the progress of each suggested sheet, and the
+    sheets the parent asked for that are not made yet."""
+    row = conn.execute("SELECT body, received_at FROM home WHERE id = 1").fetchone()
+    if row is None:
+        return {"home": None}
+    body, received = row
+    ids = sorted({sheet for s in body.get("suggestions", []) for sheet in s.get("sheet_ids", [])})
+    sheets = {}
+    if ids:
+        rows = conn.execute("SELECT id, title, body FROM sheets WHERE id = ANY(%s) AND visible_from <= %s",
+                            (ids, today())).fetchall()
+        counters = item_progress(conn, [r[0] for r in rows])
+        for sheet_id, title, sheet in rows:
+            progress = sheet_progress(sheet, counters).values()
+            sheets[sheet_id] = {"id": sheet_id, "title": title, "items": len(sheet["items"]),
+                                "answered": sum(1 for p in progress if p["solo_done"] or p["rating"]),
+                                "correct": sum(1 for p in progress if p["solo_right"] or p["rating"] == "good")}
+    requested = [r[0] for r in conn.execute(
+        "SELECT DISTINCT subject FROM sheet_requests WHERE status = 'pending'").fetchall()]
+    return {"home": body, "received_at": received, "sheets": sheets, "requested": requested}
+
+
+@app.post("/api/agent/notify")
+def notify(body: AgentNotice, agent: nip98.Agent = Depends(nip98.require_agent),
+           conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """A notification from the laptop to the parent devices, e.g. a wrong answer reported on a
+    prompt promoted less than two weeks ago, with the command to roll it back (T32)."""
+    push.send(conn, {"title": body.title, "body": body.body, "url": body.url, "tag": body.tag}, roles=("parent",))
     return {"ok": True}
 
 

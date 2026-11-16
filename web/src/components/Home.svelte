@@ -2,10 +2,14 @@
   import { onMount } from "svelte";
 
   import { api, warmCache } from "../lib/api";
+  import { isoDay, nextSchoolDay, suggestionsFor } from "../lib/home";
   import { outbox } from "../lib/outbox.svelte";
   import { formatLabel } from "../lib/sheet";
-  import type { Device, Explanation, SheetSummary } from "../lib/types";
+  import type { Device, Explanation, HomeData, SheetSummary } from "../lib/types";
+  import GradesBlock from "./GradesBlock.svelte";
   import Notifications from "./Notifications.svelte";
+  import SuggestionsBlock from "./SuggestionsBlock.svelte";
+  import UpcomingBlock from "./UpcomingBlock.svelte";
 
   let {
     device,
@@ -29,6 +33,19 @@
   const shown = $derived(explanations.filter((e) => e.status === "pending" || (e.status === "done" && e.helped === null)));
   let error = $state("");
   let offline = $state(!navigator.onLine);
+  // The three blocks: computed by the laptop after each collection (null: not sent yet).
+  let dashboard = $state<HomeData | null>(null);
+  const today = isoDay(new Date());
+  const page = $derived(dashboard?.home ?? null);
+  const next = $derived(page ? nextSchoolDay(page, today) : null);
+  const suggestions = $derived(page ? suggestionsFor(page, today, next) : []);
+  const collected = $derived(
+    page?.collected_at
+      ? new Date(page.collected_at).toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })
+      : "",
+  );
+  const stale = $derived(page?.collected_at ? Date.now() - new Date(page.collected_at).getTime() > 2 * 86_400_000 : false);
+  const title = new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
 
   const day = (iso: string) =>
     new Date(`${iso}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
@@ -43,6 +60,7 @@
     const update = () => (offline = !navigator.onLine);
     window.addEventListener("online", update);
     window.addEventListener("offline", update);
+    api.home().then((found) => (dashboard = found), () => {});
     (async () => {
       try {
         sheets = await api.sheets();
@@ -63,7 +81,7 @@
 </script>
 
 <div class="row spread">
-  <h1>Tes fiches</h1>
+  <h1 class="today">{title.charAt(0).toUpperCase() + title.slice(1)}</h1>
   {#if device.role === "parent"}
     <div class="row">
       <button class="link" onclick={onrequests}>Demander une fiche</button>
@@ -87,6 +105,22 @@
     {#if e.status === "done"}<a class="button primary" href="#/explanation/{encodeURIComponent(e.id)}">Lire</a>{/if}
   </div>
 {/each}
+
+{#if page}
+  <div class="dashboard">
+    <UpcomingBlock {page} {today} {next} />
+    <GradesBlock subjects={page.grades} />
+    <SuggestionsBlock {suggestions} sheets={dashboard?.sheets ?? {}} requested={dashboard?.requested ?? []} {today}
+      role={device.role} onopen={(id) => onopen(id)} />
+  </div>
+  {#if collected}
+    <p class="muted source" class:stale>D'après École Directe, relevé le {collected}.</p>
+  {/if}
+{:else if dashboard}
+  <div class="card"><p class="muted">Le tableau de bord arrive après la prochaine collecte de l'ordinateur.</p></div>
+{/if}
+
+<h2 class="sheets-title">Tes fiches</h2>
 
 {#if error}
   <p class="error">{error}</p>
@@ -116,3 +150,11 @@
 {/if}
 
 <Notifications />
+
+<style>
+  .today { margin-bottom: 0.4rem; }
+  .dashboard { display: grid; gap: 0; }
+  .source { font-size: 0.82rem; margin: 0.2rem 0 0; }
+  .source.stale { color: var(--bad); }
+  .sheets-title { margin-top: 1.6rem; }
+</style>

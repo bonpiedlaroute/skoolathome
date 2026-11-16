@@ -93,6 +93,10 @@ class RawGrade(Raw):
     coef: str
     noteSur: str
     valeur: str
+    # The class: average, lowest and highest grade (« 8.45 », or « » before the teacher closes it).
+    moyenneClasse: str = ""
+    minClasse: str = ""
+    maxClasse: str = ""
 
 
 class RawGradesData(Raw):
