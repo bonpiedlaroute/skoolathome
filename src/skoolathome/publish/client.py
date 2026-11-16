@@ -27,9 +27,16 @@ class Signer(Protocol):
     def sign(self, kind: int, content: str, tags: list[list[str]]) -> Event: ...
 
 
+NOT_MIGRATED = ("la base en ligne n'a pas les dernières migrations : lance "
+                "« DATABASE_URL='<adresse Neon>' uv run skoolathome api migrate »")
+
+
 class ApiError(Exception):
     def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"{status} {detail}")
+        # The API's 503 when Neon lags behind the deployed code: every log that prints the error
+        # (evening, explain timer, CLI) then says what to run.
+        said = NOT_MIGRATED if status == 503 and "not migrated" in detail else detail
+        super().__init__(f"{status} {said}")
         self.status = status
         self.detail = detail
 

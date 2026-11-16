@@ -14,6 +14,8 @@ from datetime import timedelta
 import psycopg
 import segno
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
+from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +39,16 @@ from skoolathome.schema.sheet import Sheet
 SCHOOL_TIMEZONE = ZoneInfo("Europe/Paris")
 
 app = FastAPI(title="skoolathome", docs_url=None, redoc_url=None, openapi_url=None)
+
+NOT_MIGRATED = "online database not migrated: run `skoolathome api migrate`"
+
+
+@app.exception_handler(pg_errors.UndefinedTable)
+@app.exception_handler(pg_errors.UndefinedColumn)
+async def not_migrated(request: Request, error: psycopg.Error) -> JSONResponse:
+    """The deployed code expects a table or a column Neon does not have yet: the migrations were
+    not run after the push. Said plainly, instead of a bare 500, to the laptop's log and the PWA."""
+    return JSONResponse(status_code=503, content={"detail": NOT_MIGRATED})
 
 
 class Body(BaseModel):

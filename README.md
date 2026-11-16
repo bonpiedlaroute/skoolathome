@@ -225,6 +225,8 @@ uv run skoolathome api set-url https://<your-project>.vercel.app
 
 Redeploy after each change of variables: Vercel reads them at deployment.
 
+Run `api migrate` again after every push that adds a file to `src/skoolathome/api/migrations/`. Until you do, the API answers 503 "online database not migrated", the laptop's log says which command to run, and the PWA says the server is waiting for an update.
+
 ### 7. Pair the devices
 
 ```bash

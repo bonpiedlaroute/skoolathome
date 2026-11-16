@@ -1114,7 +1114,7 @@ def _send_home_if_pending(sessions) -> None:
                 home.send(conn, client, student, date.today())
             print(f"{datetime.now():%H:%M}  Page d'accueil mise en ligne.", flush=True)
         except Exception as error:  # noqa: BLE001  (tried again at the next pass)
-            print(f"{datetime.now():%H:%M}  Page d'accueil non envoyée : {str(error)[:200]}", flush=True)
+            print(f"{datetime.now():%H:%M}  Page d'accueil non envoyée : {str(error)[:300]}", flush=True)
 
 
 def cmd_home(args: argparse.Namespace) -> int:
@@ -1133,8 +1133,11 @@ def cmd_home(args: argparse.Namespace) -> int:
         sessions = _api_sessions()
         if sessions is None:
             return 1
-        with _connect() as conn, sessions() as client:
-            home.send(conn, client, student, today)
+        try:
+            with _connect() as conn, sessions() as client:
+                home.send(conn, client, student, today)
+        except Exception as error:  # noqa: BLE001  (an ApiError says what to run)
+            sys.exit(f"\nPage d'accueil non envoyée : {str(error)[:300]}")
         print("\nPage d'accueil mise en ligne.")
     return 0
 

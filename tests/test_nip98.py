@@ -451,6 +451,22 @@ def test_the_home_page_is_sent_signed_and_read_with_the_progress(agent, parent, 
     assert parent.get("/api/home").json()["home"]["suggestions"] == []
 
 
+def test_a_database_behind_the_code_says_to_migrate(agent, parent, api_db):
+    """Pushed but not migrated (the home table came in 0013): a 503 that says what to run, on the
+    tablet and in the laptop's log, instead of a bare 500 and a home page with no blocks."""
+    from datetime import datetime
+
+    from skoolathome.schema.home import Home
+
+    api_db.execute("DROP TABLE home")
+    answer = parent.get("/api/home")
+    assert answer.status_code == 503 and "skoolathome api migrate" in answer.json()["detail"]
+    with pytest.raises(ApiError) as refused:
+        agent.home(Home.model_validate({"generated_at": datetime.now().astimezone().isoformat()}))
+    assert refused.value.status == 503
+    assert "uv run skoolathome api migrate" in str(refused.value) and "base en ligne" in str(refused.value)
+
+
 def test_the_laptop_notifies_the_parents(agent, monkeypatch):
     pushed = []
     monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append((payload, kw)) or {"sent": 1})

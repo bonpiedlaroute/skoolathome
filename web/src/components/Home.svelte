@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { api, warmCache } from "../lib/api";
+  import { api, ApiError, warmCache } from "../lib/api";
   import { isoDay, nextSchoolDay, suggestionsFor } from "../lib/home";
   import { outbox } from "../lib/outbox.svelte";
   import { formatLabel } from "../lib/sheet";
@@ -35,6 +35,8 @@
   let offline = $state(!navigator.onLine);
   // The three blocks: computed by the laptop after each collection (null: not sent yet).
   let dashboard = $state<HomeData | null>(null);
+  // Why the blocks are missing, instead of a page that silently shows only the sheets.
+  let dashboardError = $state<"migrate" | "offline" | "failed" | null>(null);
   const today = isoDay(new Date());
   const page = $derived(dashboard?.home ?? null);
   const next = $derived(page ? nextSchoolDay(page, today) : null);
@@ -60,7 +62,13 @@
     const update = () => (offline = !navigator.onLine);
     window.addEventListener("online", update);
     window.addEventListener("offline", update);
-    api.home().then((found) => (dashboard = found), () => {});
+    api.home().then(
+      (found) => (dashboard = found),
+      (failure) => {
+        dashboardError =
+          failure instanceof ApiError && failure.status === 503 ? "migrate" : navigator.onLine ? "failed" : "offline";
+      },
+    );
     (async () => {
       try {
         sheets = await api.sheets();
@@ -118,6 +126,21 @@
   {/if}
 {:else if dashboard}
   <div class="card"><p class="muted">Le tableau de bord arrive après la prochaine collecte de l'ordinateur.</p></div>
+{:else if dashboardError}
+  <div class="card" role="status">
+    {#if dashboardError === "offline"}
+      <p class="muted">Pas de connexion : le tableau de bord s'affichera dès que l'appareil sera en ligne.</p>
+    {:else if dashboardError === "migrate"}
+      <p class="muted">Le tableau de bord n'est pas encore disponible : le serveur attend une mise à jour.</p>
+      {#if device.role === "parent"}
+        <p class="muted fix">Sur l'ordinateur : <code>DATABASE_URL='…' uv run skoolathome api migrate</code></p>
+      {/if}
+    {:else}
+      <p class="muted">Le tableau de bord n'a pas pu être chargé. Réessaie dans un moment.</p>
+    {/if}
+  </div>
+{:else}
+  <p class="muted">Chargement du tableau de bord…</p>
 {/if}
 
 <h2 class="sheets-title">Tes fiches</h2>
@@ -157,4 +180,5 @@
   .source { font-size: 0.82rem; margin: 0.2rem 0 0; }
   .source.stale { color: var(--bad); }
   .sheets-title { margin-top: 1.6rem; }
+  .fix { font-size: 0.85rem; margin-top: 0.4rem; overflow-wrap: anywhere; }
 </style>
