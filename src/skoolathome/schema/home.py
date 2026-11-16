@@ -53,12 +53,44 @@ class HomeSubjectGrades(Strict):
     subject_code: str = Field(max_length=20)
     subject: str = Field(max_length=60)
     grades: list[HomeGrade] = Field(max_length=5)  # the latest first
+    # Over the current period, as École Directe counts them: each grade on 20, weighted by its
+    # coefficient, the grades marked « non significative » left out. None: nothing to count.
+    average: float | None = None
+    class_average: float | None = None
+
+
+class HomeAverages(Strict):
+    """The general average: the subject averages added up and divided by their number (no subject
+    coefficients at this school), the child's and the class's, over the same subjects."""
+
+    period: str = Field(default="", max_length=40)  # « 1er trimestre »
+    average: float | None = None
+    class_average: float | None = None
+    subjects: int = 0
+
+
+class HomeLink(Strict):
+    """A web page the teacher linked in the lesson (GeoGebra, a video…), given as it is."""
+
+    url: str = Field(max_length=500, pattern=r"^https?://")
+    label: str = Field(default="", max_length=120)
+
+
+class HomeDocument(Strict):
+    """A file the teacher attached to the lesson. With its sha256, the PWA can open it: the laptop
+    downloaded it during the collection and put it online with the page."""
+
+    name: str = Field(max_length=160)
+    size: int | None = None
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # None: only on École Directe
 
 
 class HomeLesson(Strict):
     day: date
     points: list[str] = Field(default=[], max_length=5)  # the first lines of the lesson, as written
     attachment: bool = False                              # the teacher attached a document
+    documents: list[HomeDocument] = Field(default=[], max_length=12)
+    links: list[HomeLink] = Field(default=[], max_length=10)
 
 
 class HomeRequest(Strict):
@@ -85,4 +117,5 @@ class Home(Strict):
     holidays: list[date] = Field(default=[], max_length=60)
     tests: list[HomeTest] = Field(default=[], max_length=40)
     grades: list[HomeSubjectGrades] = Field(default=[], max_length=30)
+    averages: HomeAverages | None = None
     suggestions: list[HomeSuggestion] = Field(default=[], max_length=40)

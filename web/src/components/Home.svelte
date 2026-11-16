@@ -65,8 +65,13 @@
     api.home().then(
       (found) => (dashboard = found),
       (failure) => {
+        // The service worker answers 503 « offline » itself: only the API's own 503 says to migrate.
         dashboardError =
-          failure instanceof ApiError && failure.status === 503 ? "migrate" : navigator.onLine ? "failed" : "offline";
+          failure instanceof ApiError && failure.status === 503 && failure.message.includes("migrate")
+            ? "migrate"
+            : navigator.onLine && !(failure instanceof ApiError && failure.message === "offline")
+              ? "failed"
+              : "offline";
       },
     );
     (async () => {
@@ -117,8 +122,9 @@
 {#if page}
   <div class="dashboard">
     <UpcomingBlock {page} {today} {next} />
-    <GradesBlock subjects={page.grades} />
+    <GradesBlock subjects={page.grades} averages={page.averages ?? null} />
     <SuggestionsBlock {suggestions} sheets={dashboard?.sheets ?? {}} requested={dashboard?.requested ?? []} {today}
+      documents={dashboard?.documents ?? {}}
       role={device.role} onopen={(id) => onopen(id)} />
   </div>
   {#if collected}
@@ -176,7 +182,8 @@
 
 <style>
   .today { margin-bottom: 0.4rem; }
-  .dashboard { display: grid; gap: 0; }
+  /* minmax(0, 1fr): a long file name is cut with « … », it never widens the page on a phone. */
+  .dashboard { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
   .source { font-size: 0.82rem; margin: 0.2rem 0 0; }
   .source.stale { color: var(--bad); }
   .sheets-title { margin-top: 1.6rem; }

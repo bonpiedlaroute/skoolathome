@@ -10,17 +10,21 @@ import hashlib
 import json
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 
 class Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+    # Fields left out of the fingerprint: what the agent never reads, so that adding them does not
+    # make every item look changed (a changed lesson is summarized again by the model).
+    unprinted: ClassVar[frozenset[str]] = frozenset()
 
     def fingerprint(self) -> str:
         """Hash of the content: a changed fingerprint means the source changed the item."""
-        canonical = json.dumps(self.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+        canonical = json.dumps(self.model_dump(mode="json", exclude=set(self.unprinted)), sort_keys=True,
+                               ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -31,6 +35,13 @@ class Document(Model):
     name: str
     kind: str  # the source's own file type, needed to download it
     size: int | None = None
+
+
+class Link(Model):
+    """A web page a teacher linked in a lesson (GeoGebra, a video…): public, given as it is."""
+
+    url: str
+    label: str = ""
 
 
 class TimetableSlot(Model):
@@ -60,6 +71,9 @@ class Lesson(Model):
     content: str  # plain text, HTML removed
     is_empty: bool
     documents: tuple[Document, ...] = ()
+    links: tuple[Link, ...] = ()  # for the PWA only: the models read the content
+
+    unprinted: ClassVar[frozenset[str]] = frozenset({"links"})
 
 
 class Homework(Model):
@@ -93,6 +107,7 @@ class Grade(Model):
     class_average: Decimal | None = None  # the class's average, lowest and highest grade on this test
     class_min: Decimal | None = None
     class_max: Decimal | None = None
+    significant: bool = True  # False: shown, but not counted in the averages (École Directe's « nonSignificatif »)
 
 
 class SchoolSnapshot(Model):

@@ -6,21 +6,24 @@ from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import hashlib
 import hmac
 import os
 import secrets
+import time
 from datetime import timedelta
+from urllib.parse import quote
 
 import psycopg
 import segno
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from skoolathome.api import auth, nip98, push
-from skoolathome.api.auth import Device, current_device, get_conn, parent_device
+from skoolathome.api.auth import COOKIE_NAME, Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
 from skoolathome.schema.explanation import ExplanationAnswer, ExplanationRequest, Helped
@@ -543,6 +546,16 @@ def explanation_helped(
     return _explanation_json(row)
 
 
+@app.get("/api/agent/queue")
+def agent_queue(agent: nip98.Agent = Depends(nip98.require_agent),
+                conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """What waits for the laptop, in one signed call every few minutes: the explanations to write,
+    and the sheets the parent asked for (made at once, without waiting for the evening)."""
+    requests_waiting = [r[0] for r in conn.execute(
+        "SELECT id FROM sheet_requests WHERE status = 'pending' ORDER BY created_at LIMIT 20").fetchall()]
+    return {"explanations": pending_explanations(agent, conn), "requests": requests_waiting}
+
+
 @app.get("/api/agent/explanations")
 def pending_explanations(
     agent: nip98.Agent = Depends(nip98.require_agent), conn: psycopg.Connection = Depends(get_conn)
@@ -580,19 +593,28 @@ def answer_explanation(
 # ------------------------------------------------------------------ home page
 
 
+def _home_files(body: dict) -> set[str]:
+    return {d["sha256"] for s in body.get("suggestions", []) for lesson in s.get("lessons", [])
+            for d in lesson.get("documents", []) if d.get("sha256")}
+
+
 @app.put("/api/agent/home")
 def put_home(body: Home, agent: nip98.Agent = Depends(nip98.require_agent),
              conn: psycopg.Connection = Depends(get_conn)) -> dict:
-    """The home page computed by the laptop after a collection: it replaces the previous one."""
-    conn.execute("INSERT INTO home (id, body) VALUES (1, %s) ON CONFLICT (id) DO UPDATE "
-                 "SET body = EXCLUDED.body, received_at = now()", (Jsonb(body.model_dump(mode="json")),))
+    """The home page computed by the laptop after a collection: it replaces the previous one. The
+    files of the previous page that this one does not show are removed."""
+    page = body.model_dump(mode="json")
+    with conn.transaction():
+        conn.execute("INSERT INTO home (id, body) VALUES (1, %s) ON CONFLICT (id) DO UPDATE "
+                     "SET body = EXCLUDED.body, received_at = now()", (Jsonb(page),))
+        conn.execute("DELETE FROM documents WHERE NOT (sha256 = ANY(%s))", (sorted(_home_files(page)),))
     return {"ok": True}
 
 
 @app.get("/api/home")
 def get_home(device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)) -> dict:
-    """The page, with what changed online since: the progress of each suggested sheet, and the
-    sheets the parent asked for that are not made yet."""
+    """The page, with what changed online since: the progress of each suggested sheet, the sheets
+    the parent asked for that are not made yet, and a link to each attached file."""
     row = conn.execute("SELECT body, received_at FROM home WHERE id = 1").fetchone()
     if row is None:
         return {"home": None}
@@ -610,7 +632,99 @@ def get_home(device: Device = Depends(current_device), conn: psycopg.Connection 
                                 "correct": sum(1 for p in progress if p["solo_right"] or p["rating"] == "good")}
     requested = [r[0] for r in conn.execute(
         "SELECT DISTINCT subject FROM sheet_requests WHERE status = 'pending'").fetchall()]
-    return {"home": body, "received_at": received, "sheets": sheets, "requested": requested}
+    files = sorted(_home_files(body))
+    documents = {}
+    if files:
+        key = _app_key(conn, DOCUMENTS_KEY)
+        online = [r[0] for r in conn.execute("SELECT sha256 FROM documents WHERE sha256 = ANY(%s)", (files,))]
+        documents = {sha: document_link(key, sha, time.time()) for sha in online}
+    return {"home": body, "received_at": received, "sheets": sheets, "requested": requested,
+            "documents": documents}
+
+
+# ------------------------------------------------------------------ teachers' files
+
+DOCUMENTS_KEY = "documents"
+DOCUMENT_LINK_SECONDS = 2 * 86_400
+DOCUMENT_MAX_BYTES = 4_500_000  # what Vercel takes in one request
+# Shown in the browser: formats that cannot run a script. Anything else is downloaded, never
+# rendered on this origin (an HTML or SVG file attached by mistake would run with the session).
+INLINE_TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _app_key(conn: psycopg.Connection, name: str) -> bytes:
+    """A random key the API keeps for itself, made at its first use."""
+    conn.execute("INSERT INTO app_keys (name, key) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                 (name, secrets.token_bytes(32)))
+    return bytes(conn.execute("SELECT key FROM app_keys WHERE name = %s", (name,)).fetchone()[0])
+
+
+def _document_signature(key: bytes, sha: str, expires: int) -> str:
+    return hmac.new(key, f"{sha}:{expires}".encode(), hashlib.sha256).hexdigest()
+
+
+def document_link(key: bytes, sha: str, now: float) -> str:
+    """A link that opens the file for two days without a session: on the iPad, a file opens in
+    Safari, which does not share the installed app's cookies. Rounded to the hour: the same link
+    for an hour, which the browser can cache."""
+    expires = (int(now) // 3600 + 1) * 3600 + DOCUMENT_LINK_SECONDS
+    return f"/api/documents/{sha}?expires={expires}&sig={_document_signature(key, sha, expires)}"
+
+
+class MissingDocuments(Body):
+    sha256: list[str] = Field(max_length=100)
+
+
+@app.post("/api/agent/documents/missing")
+def missing_documents(body: MissingDocuments, agent: nip98.Agent = Depends(nip98.require_agent),
+                      conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """Which of these files the laptop has to send: each one is sent once."""
+    have = {r[0] for r in conn.execute("SELECT sha256 FROM documents WHERE sha256 = ANY(%s)", (body.sha256,))}
+    return {"missing": [sha for sha in dict.fromkeys(body.sha256) if sha not in have]}
+
+
+@app.put("/api/agent/documents/{sha}")
+async def put_document(sha: str, request: Request, name: str = Query(min_length=1, max_length=160),
+                       agent: nip98.Agent = Depends(nip98.require_agent),
+                       conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """One file, as it is: its sha256 names it and is checked."""
+    content = await request.body()  # already read for the signature: from the cache
+    if len(content) > DOCUMENT_MAX_BYTES:
+        raise HTTPException(413, "file too large")
+    if hashlib.sha256(content).hexdigest() != sha:
+        raise HTTPException(422, "sha256 does not match the file")
+    kind = request.headers.get("content-type", "application/octet-stream").split(";")[0].strip()[:100]
+    conn.execute("INSERT INTO documents (sha256, name, media_type, size, body) VALUES (%s, %s, %s, %s, %s) "
+                 "ON CONFLICT (sha256) DO UPDATE SET name = EXCLUDED.name, received_at = now()",
+                 (sha, name, kind or "application/octet-stream", len(content), content))
+    return {"ok": True}
+
+
+@app.get("/api/documents/{sha}")
+def get_document(sha: str, expires: int = 0, sig: str = "", conn: psycopg.Connection = Depends(get_conn),
+                 session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+    """A teacher's file: with a link of the home page (two days), or from a paired device. Never
+    401 here: the PWA's service worker reads a 401 as a revoked device and forgets its data."""
+    valid = (sig and expires >= time.time()
+             and hmac.compare_digest(sig, _document_signature(_app_key(conn, DOCUMENTS_KEY), sha, expires)))
+    if not valid:
+        try:
+            current_device(conn, session)
+        except HTTPException:
+            raise HTTPException(403, "link expired: open the file again from the app") from None
+    row = conn.execute("SELECT name, body FROM documents WHERE sha256 = %s", (sha,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "no such file: the home page changed since")
+    name, content = row
+    suffix = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    inline = INLINE_TYPES.get(suffix)
+    disposition = "inline" if inline else "attachment"
+    return Response(content=bytes(content), media_type=inline or "application/octet-stream", headers={
+        "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(name)}",
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.post("/api/agent/notify")

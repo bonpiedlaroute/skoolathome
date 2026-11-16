@@ -1,9 +1,13 @@
 <script lang="ts">
-  // Block 2: the latest grade of each subject, against the class: its range, its average.
-  import { frDay, gap, gradeBar, hue, number } from "../lib/home";
-  import type { HomeSubjectGrades } from "../lib/types";
+  // Block 2: the general average against the class's, then the latest grade of each subject
+  // against the class (its range, its average), and the subject's average over the period.
+  import { difference, frDay, gap, gradeBar, hue, number } from "../lib/home";
+  import type { HomeAverages, HomeSubjectGrades } from "../lib/types";
 
-  let { subjects }: { subjects: HomeSubjectGrades[] } = $props();
+  let { subjects, averages = null }: { subjects: HomeSubjectGrades[]; averages?: HomeAverages | null } = $props();
+
+  const general = $derived(averages && averages.average !== null ? averages : null);
+  const generalGap = $derived(general ? difference(general.average, general.class_average) : null);
 
   let all = $state(false);
   const SHOWN = 6;
@@ -16,6 +20,25 @@
     <span class="eyebrow">Notes</span>
     <h2 id="grades-title">Dernières notes</h2>
   </div>
+  {#if general}
+    <div class="general">
+      <div class="stat">
+        <span class="label">Moyenne générale</span>
+        <strong>{number(general.average)}</strong>
+      </div>
+      <div class="stat">
+        <span class="label">Classe</span>
+        <strong class="theirs">{number(general.class_average)}</strong>
+      </div>
+      {#if generalGap}
+        <span class="gap big" class:above={generalGap.above} title="Écart avec la moyenne générale de la classe">{generalGap.text}</span>
+      {/if}
+      <p class="muted small how">
+        {general.period ? `${general.period.charAt(0).toUpperCase()}${general.period.slice(1)} : ` : ""}les moyennes
+        des {general.subjects} matières additionnées puis divisées par {general.subjects}. Chaque note compte sur 20, avec son coefficient.
+      </p>
+    </div>
+  {/if}
   {#if subjects.length === 0}
     <p class="muted">Pas encore de note ce trimestre.</p>
   {:else}
@@ -52,6 +75,17 @@
               <div><dt>max</dt><dd>{number(grade.class_max)}</dd></div>
             </dl>
           {/if}
+          {#if subject.average !== null && subject.average !== undefined}
+            {@const meanGap = difference(subject.average, subject.class_average)}
+            <div class="means">
+              <span class="muted small">Moyenne</span>
+              <strong>{number(subject.average)}</strong>
+              {#if subject.class_average !== null && subject.class_average !== undefined}
+                <span class="muted small">classe {number(subject.class_average)}</span>
+              {/if}
+              {#if meanGap}<span class="gap" class:above={meanGap.above}>{meanGap.text}</span>{/if}
+            </div>
+          {/if}
           {#if subject.grades.length > 1}
             <div class="before small muted">
               Avant :
@@ -74,6 +108,22 @@
 <style>
   .block { padding: 1.1rem 1.1rem 0.9rem; }
   .head { margin-bottom: 0.7rem; }
+  .general {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1.4rem; margin-bottom: 0.9rem;
+    padding: 0.75rem 0.9rem; border-radius: 12px; background: var(--hint-bg);
+  }
+  .stat { display: grid; }
+  .stat .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .stat strong { font-size: 2rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .stat .theirs { color: var(--muted); }
+  .gap.big { margin-left: 0; font-size: 0.95rem; padding: 0.2rem 0.65rem; }
+  .how { flex-basis: 100%; margin: 0; }
+  .means {
+    display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap;
+    border-top: 1px dashed var(--line); padding-top: 0.4rem; margin-top: 0.2rem;
+  }
+  .means strong { font-variant-numeric: tabular-nums; }
+  .means .gap { margin-left: auto; }
   .eyebrow { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
   h2 { margin: 0; font-size: 1.35rem; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: 0.7rem; }

@@ -67,7 +67,11 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/assets/")) {
     event.respondWith(cacheFirst(request)); // file names change with their content
-  } else if (url.pathname.startsWith("/api/cron/") || url.pathname.startsWith("/api/push/")) {
+  } else if (
+    url.pathname.startsWith("/api/cron/") ||
+    url.pathname.startsWith("/api/push/") ||
+    url.pathname.startsWith("/api/documents/") // teachers' files: the browser's own cache, by their signed link
+  ) {
     return; // never cached
   } else if (url.pathname.startsWith("/api/")) {
     event.respondWith(networkFirst(request, DATA));

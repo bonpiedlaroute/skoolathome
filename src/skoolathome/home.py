@@ -6,14 +6,18 @@ on the lessons École Directe gave: the teachers fill the notebook once the less
 latest lesson of a subject is what to revise before the next one.
 
 Sent after each collection, by the evening, or by the next `skoolathome explain` pass when the API
-could not take it (one signature): the page follows the data without a second login.
+could not take it (one signature): the page follows the data without a second login. The files
+the teachers attached to the lessons shown go online with it (one signature each, only the ones
+the API does not have yet), so that the child can open them from the PWA.
 """
 
 from __future__ import annotations
 
+import mimetypes
 import re
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -23,8 +27,11 @@ from skoolathome.rules.inputs import PAST_TEST_KINDS, upcoming_tests
 from skoolathome.rules.plan import unique_tests
 from skoolathome.schema.home import (
     Home,
+    HomeAverages,
+    HomeDocument,
     HomeGrade,
     HomeLesson,
+    HomeLink,
     HomeRequest,
     HomeSlot,
     HomeSubjectGrades,
@@ -40,6 +47,7 @@ REVISION_LOOKBACK_DAYS = 28
 MAX_LESSONS = 3          # the lessons shown for a test; one for the next lesson
 MAX_POINTS = 4
 POINT_CHARS = 140
+ONLINE_MAX_BYTES = 4_000_000   # one signed call per file: Vercel takes 4.5 MB per request
 _DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 _BOILERPLATE = re.compile(r"^(feuille de route|comp[ée]tences?\b|travail [àa] faire|devoirs?\s*:)", re.IGNORECASE)
 _LABEL = re.compile(r"^(objectifs?|th[èe]me|titre)\s*:\s*", re.IGNORECASE)
@@ -130,8 +138,63 @@ def _tests(conn: psycopg.Connection, student_id: str, today: date, names: list[s
     return tests
 
 
-def _grades(conn: psycopg.Connection, student_id: str, names: list[str]) -> list[HomeSubjectGrades]:
-    """The latest grades of each subject, the subjects graded most recently first."""
+def _on_20(value, out_of) -> float | None:
+    return float(value) * 20 / float(out_of) if value is not None and out_of else None
+
+
+def _mean(weighted: list[tuple[float, float]]) -> float | None:
+    total = sum(weight for _, weight in weighted)
+    return sum(value * weight for value, weight in weighted) / total if total else None
+
+
+def _rounded(value: float | None) -> float | None:
+    return round(value, 2) if value is not None else None
+
+
+def _period_label(conn: psycopg.Connection, code: str) -> str:
+    """« 1er trimestre »: the name École Directe gives the period, in its latest grades response."""
+    row = conn.execute(
+        "SELECT p->>'periode' FROM (SELECT body FROM raw.responses WHERE kind = 'grades' ORDER BY fetched_at DESC "
+        "LIMIT 1) r CROSS JOIN LATERAL jsonb_array_elements(r.body->'data'->'periodes') AS p "
+        "WHERE p->>'idPeriode' = %s LIMIT 1", (code,),
+    ).fetchone()
+    return (row[0] or "")[:40] if row else ""
+
+
+def averages(conn: psycopg.Connection, student_id: str) -> tuple[HomeAverages | None, dict[str, tuple]]:
+    """The averages of the current period (the one of the latest grade), as École Directe counts
+    them: each grade on 20, weighted by its coefficient, without the grades marked « non
+    significative »; the class's from the class average of each test. Then the general average:
+    the subject averages added up and divided by their number, over the subjects that have both."""
+    row = conn.execute("SELECT period FROM school.grades WHERE student_id = %s AND value IS NOT NULL "
+                       "ORDER BY day DESC, source_id DESC LIMIT 1", (student_id,)).fetchone()
+    if row is None:
+        return None, {}
+    rows = conn.execute(
+        "SELECT subject_code, value, out_of, coefficient, class_average FROM school.grades "
+        "WHERE student_id = %s AND period = %s AND significant AND value IS NOT NULL AND out_of > 0 "
+        "AND coalesce(coefficient, 1) > 0", (student_id, row[0]),
+    ).fetchall()
+    child: dict[str, list[tuple[float, float]]] = {}
+    klass: dict[str, list[tuple[float, float]]] = {}
+    for code, value, out_of, coefficient, average in rows:
+        weight = float(coefficient) if coefficient is not None else 1.0
+        child.setdefault(code, []).append((_on_20(value, out_of), weight))
+        if average is not None:
+            klass.setdefault(code, []).append((_on_20(average, out_of), weight))
+    subjects = {code: (_mean(child[code]), _mean(klass.get(code, []))) for code in child}
+    both = [pair for pair in subjects.values() if pair[0] is not None and pair[1] is not None]
+    general = HomeAverages(
+        period=_period_label(conn, row[0]), subjects=len(both),
+        average=_rounded(sum(a for a, _ in both) / len(both)) if both else None,
+        class_average=_rounded(sum(c for _, c in both) / len(both)) if both else None,
+    )
+    return general, {code: (_rounded(mine), _rounded(theirs)) for code, (mine, theirs) in subjects.items()}
+
+
+def _grades(conn: psycopg.Connection, student_id: str, names: list[str],
+            subject_averages: dict[str, tuple] | None = None) -> list[HomeSubjectGrades]:
+    """The latest grades of each subject, with its averages, the subjects graded most recently first."""
     rows = conn.execute(
         "SELECT subject_code, subject, day, kind, title, raw_value, value, out_of, coefficient, class_average, "
         "class_min, class_max FROM (SELECT g.*, row_number() OVER (PARTITION BY subject_code "
@@ -141,8 +204,9 @@ def _grades(conn: psycopg.Connection, student_id: str, names: list[str]) -> list
     ).fetchall()
     subjects: dict[str, HomeSubjectGrades] = {}
     for code, subject, day, kind, title, raw, value, out_of, coef, average, low, high in rows:
+        mine, theirs = (subject_averages or {}).get(code, (None, None))
         entry = subjects.setdefault(code, HomeSubjectGrades(subject_code=code, subject=label(code, subject)[:60],
-                                                            grades=[]))
+                                                            grades=[], average=mine, class_average=theirs))
         entry.grades.append(HomeGrade(
             day=day, kind=kind[:40], title=privacy.public_text(title, names)[:120], value=raw.strip()[:12],
             score=_number(value), out_of=_number(out_of), coefficient=_number(coef),
@@ -150,19 +214,54 @@ def _grades(conn: psycopg.Connection, student_id: str, names: list[str]) -> list
     return sorted(subjects.values(), key=lambda s: (-s.grades[0].day.toordinal(), s.subject))
 
 
+def _documents(conn: psycopg.Connection, student_id: str, lesson_ids: list[str],
+               names: list[str]) -> list[HomeDocument]:
+    """The files attached to these lessons. With its sha256 when the PWA can open it: downloaded
+    during a collection, still on disk, small enough for one call."""
+    rows = conn.execute(
+        "SELECT d->>'name', (d->>'size')::bigint, a.sha256, a.path, a.status FROM school.lessons l "
+        "CROSS JOIN LATERAL jsonb_array_elements(l.documents) AS d LEFT JOIN school.attachments a "
+        "ON a.source = l.source AND a.student_id = l.student_id AND a.lesson_source_id = l.source_id "
+        "AND a.document_id = d->>'source_id' WHERE l.student_id = %s AND l.source_id = ANY(%s) "
+        "ORDER BY l.source_id, d->>'source_id'", (student_id, lesson_ids),
+    ).fetchall()
+    found, seen = [], set()
+    for name, size, sha, path, status in rows:
+        online = (status == "downloaded" and sha and path and Path(path).is_file()
+                  and Path(path).stat().st_size <= ONLINE_MAX_BYTES)
+        key = sha if online else name
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(HomeDocument(name=privacy.public_text(name or "document", names)[:160], size=size,
+                                  sha256=sha if online else None))
+    return found[:12]
+
+
 def _lessons_before(conn: psycopg.Connection, student_id: str, code: str, before: date, since: date,
                     count: int, names: list[str]) -> list[HomeLesson]:
-    """The latest lessons of the subject with something written (or a document attached), before a day."""
+    """The latest lessons of the subject with something written (or a document attached), before a
+    day, with the files and the web pages the teacher gave."""
     rows = conn.execute(
         "SELECT l.day, string_agg(CASE WHEN l.is_empty THEN '' ELSE l.content END, E'\n' ORDER BY l.source_id), "
-        "bool_or(jsonb_array_length(l.documents) > 0) FROM school.lessons l "
+        "bool_or(jsonb_array_length(l.documents) > 0), array_agg(l.source_id ORDER BY l.source_id), "
+        "jsonb_agg(l.links ORDER BY l.source_id) FROM school.lessons l "
         "WHERE l.student_id = %s AND l.subject_code = %s AND l.day < %s AND l.day > %s "
         "GROUP BY l.day HAVING bool_or(NOT l.is_empty) OR bool_or(jsonb_array_length(l.documents) > 0) "
         "ORDER BY l.day DESC LIMIT %s",
         (student_id, code, before, since, count),
     ).fetchall()
-    return [HomeLesson(day=day, points=points(privacy.public_text(text or "", names)), attachment=bool(attached))
-            for day, text, attached in rows]
+    lessons = []
+    for day, text, attached, lesson_ids, link_lists in rows:
+        links: dict[str, HomeLink] = {}
+        for item in (link for found in link_lists for link in found):
+            if item.get("url", "").startswith(("http://", "https://")) and item["url"] not in links:
+                links[item["url"]] = HomeLink(url=item["url"][:500], label=item.get("label", "")[:120])
+        lessons.append(HomeLesson(
+            day=day, points=points(privacy.public_text(text or "", names)), attachment=bool(attached),
+            documents=_documents(conn, student_id, lesson_ids, names) if attached else [],
+            links=list(links.values())[:10]))
+    return lessons
 
 
 def _sheets_for(conn: psycopg.Connection, student_id: str, code: str, lessons: list[HomeLesson],
@@ -232,8 +331,10 @@ def compute(conn: psycopg.Connection, student_id: str, today: date) -> Home:
         "SELECT max(finished_at) FROM school.collection_runs WHERE status IN ('ok', 'partial') AND student_id = %s",
         (student_id,),
     ).fetchone()[0]
+    general, subject_averages = averages(conn, student_id)
     return Home(generated_at=datetime.now().astimezone(), collected_at=collected, slots=slots[:200],
-                holidays=holidays[:60], tests=tests[:40], grades=_grades(conn, student_id, names)[:30],
+                holidays=holidays[:60], tests=tests[:40],
+                grades=_grades(conn, student_id, names, subject_averages)[:30], averages=general,
                 suggestions=_suggestions(conn, student_id, today, slots, tests, names))
 
 
@@ -257,9 +358,46 @@ def pending(conn: psycopg.Connection) -> bool:
     return published is not None and published > row[1]
 
 
+def _files(page: Home) -> set[str]:
+    return {d.sha256 for s in page.suggestions for lesson in s.lessons for d in lesson.documents if d.sha256}
+
+
+def _without(page: Home, missing: set[str]) -> Home:
+    """The page without the files that could not go online: shown as « sur École Directe »."""
+    def lesson(item: HomeLesson) -> HomeLesson:
+        return item.model_copy(update={"documents": [
+            d.model_copy(update={"sha256": None}) if d.sha256 in missing else d for d in item.documents]})
+    return page.model_copy(update={"suggestions": [
+        s.model_copy(update={"lessons": [lesson(item) for item in s.lessons]}) for s in page.suggestions]})
+
+
+def upload_files(conn: psycopg.Connection, client, page: Home) -> Home:
+    """Each file of the page the API does not have yet: one signed call per file. The API keeps
+    only the files of the latest page."""
+    wanted = _files(page)
+    if not wanted:
+        return page
+    failed = set()
+    rows = conn.execute("SELECT DISTINCT ON (sha256) sha256, path, name FROM school.attachments "
+                        "WHERE sha256 = ANY(%s) AND status = 'downloaded'", (sorted(wanted),)).fetchall()
+    on_disk = {sha: (path, name) for sha, path, name in rows}
+    for sha in client.missing_documents(sorted(wanted)):
+        path, name = on_disk.get(sha, (None, None))
+        try:
+            content = Path(path).read_bytes() if path else None
+        except OSError:
+            content = None
+        if content is None or len(content) > ONLINE_MAX_BYTES:
+            failed.add(sha)
+            continue
+        kind = mimetypes.guess_type(name or path)[0] or "application/octet-stream"
+        client.upload_document(sha, (name or Path(path).name)[:160], kind, content)
+    return _without(page, failed) if failed else page
+
+
 def send(conn: psycopg.Connection, client, student_id: str, today: date) -> Home:
-    """Computed now, sent with one signature, remembered."""
-    page = compute(conn, student_id, today)
+    """Computed now, its files put online, then the page with one signature, remembered."""
+    page = upload_files(conn, client, compute(conn, student_id, today))
     client.home(page)
     conn.execute("INSERT INTO agent.home_sends (run_id, body) VALUES (%s, %s)",
                  (latest_run(conn), Jsonb(page.model_dump(mode="json"))))
@@ -286,13 +424,20 @@ def describe(page: Home, today: date) -> str:
     lines.append("Contrôles jusqu'à J+3 :" + ("" if soon else " aucun"))
     for test in soon:
         lines.append(f"  {fr_day(test.day)}  {test.subject} — {test.what[:90]}")
+    general = page.averages
+    if general and general.average is not None:
+        lines.append(f"\nMoyenne générale ({general.period or 'période en cours'}, {general.subjects} matières) : "
+                     f"{general.average:g}, classe {general.class_average:g}")
     lines.append("\nDernières notes :")
     for subject in page.grades:
         grade = subject.grades[0]
         out_of = f"/{grade.out_of:g}" if grade.out_of else ""
         klass = (f"  classe {grade.class_average:g} (min {grade.class_min:g}, max {grade.class_max:g})"
                  if grade.class_average is not None and grade.class_min is not None and grade.class_max is not None else "")
-        lines.append(f"  {subject.subject:<22} {grade.value}{out_of}  {fr_day(grade.day)}  {grade.kind}{klass}")
+        mean = (f"  moyenne {subject.average:g}" + (f" / classe {subject.class_average:g}"
+                                                    if subject.class_average is not None else "")
+                if subject.average is not None else "")
+        lines.append(f"  {subject.subject:<22} {grade.value}{out_of}  {fr_day(grade.day)}  {grade.kind}{klass}{mean}")
     shown = [s for s in page.suggestions if (s.reason == "lesson" and s.for_day == day)
              or (s.reason == "test" and today <= s.for_day <= today + timedelta(days=3))]
     lines.append("\nFiches suggérées :" + ("" if shown else " aucune"))
@@ -301,6 +446,8 @@ def describe(page: Home, today: date) -> str:
         lines.append(f"  {suggestion.subject} ({why})" + (f" : fiche {', '.join(suggestion.sheet_ids)}"
                                                          if suggestion.sheet_ids else " : à demander"))
         for lesson in suggestion.lessons:
-            lines.append(f"    {fr_day(lesson.day)} : " + " / ".join(lesson.points)[:150]
-                         + (" [document du prof]" if lesson.attachment else ""))
+            files = (f" [{len(lesson.documents)} document(s), {sum(1 for d in lesson.documents if d.sha256)} en ligne]"
+                     if lesson.documents else " [document du prof]" if lesson.attachment else "")
+            lines.append(f"    {fr_day(lesson.day)} : " + " / ".join(lesson.points)[:150] + files
+                         + (f" [liens : {', '.join(link.label for link in lesson.links)}]" if lesson.links else ""))
     return "\n".join(lines)

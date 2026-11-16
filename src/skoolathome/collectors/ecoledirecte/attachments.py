@@ -3,13 +3,15 @@
 The best possible source for a sheet: École Directe itself links it to the lesson, no search
 needed. During the collection, in the same session as the rest (one login a day):
 
-1. `register` lists the attachments of every lesson collected, with their status: a PDF is
-   `pending`; another format (Word, image, link…) is `unsupported`, counted but not processed;
-   a file above the limit is `too_large`.
+1. `register` lists the attachments of every lesson collected, with their status: a file is
+   `pending`, whatever its format; a file above the limit is `too_large`.
 2. `download_pending` downloads each pending file once, with a pause between two files and a
-   maximum per run. A file is kept as data/attachments/<sha256>.pdf (data/ is never committed):
-   the same file attached twice, or found again, is neither downloaded nor indexed again.
-3. `AttachmentSource` hands the files to the index of T18: pages, OCR when needed, vectors.
+   maximum per run. A file is kept as data/attachments/<sha256>.<suffix> (data/ is never
+   committed): the same file attached twice, or found again, is neither downloaded nor indexed
+   again. A file that is not what its name says (an error page instead of a PDF) is `unsupported`.
+3. `AttachmentSource` hands the PDFs to the index of T18: pages, OCR when needed, vectors. The
+   other formats (images, Word, GeoGebra…) are for the PWA only: the child opens them from the
+   home page, to go further (home.py).
 """
 
 from __future__ import annotations
@@ -27,7 +29,18 @@ from skoolathome.schema import SchoolSnapshot
 from skoolathome.schema.material import CourseDocument, DocumentRef, Page
 
 ROOT = Path("data/attachments")
-PROCESSED = {".pdf"}       # images, Word, links: listed and counted only, for now
+INDEXED = {".pdf"}         # the other formats are only offered on the PWA
+# What a file must start with, when its name says what it is: École Directe answers an error with
+# a page of HTML or JSON, never kept as a course document.
+MAGIC = {
+    ".pdf": (b"%PDF",),
+    ".png": (b"\x89PNG",),
+    ".jpg": (b"\xff\xd8",), ".jpeg": (b"\xff\xd8",),
+    ".gif": (b"GIF8",),
+    ".docx": (b"PK",), ".pptx": (b"PK",), ".xlsx": (b"PK",), ".odt": (b"PK",), ".odp": (b"PK",),
+    ".ods": (b"PK",), ".ggb": (b"PK",), ".zip": (b"PK",),
+    ".doc": (b"\xd0\xcf\x11\xe0",), ".ppt": (b"\xd0\xcf\x11\xe0",), ".xls": (b"\xd0\xcf\x11\xe0",),
+}
 MAX_BYTES = 20 * 2**20     # 20 Mo: a lesson's PDF is well below (the largest seen: 3.4 Mo)
 MAX_PER_RUN = 20           # the first collection finds about thirty: two evenings
 MAX_ATTEMPTS = 3
@@ -36,9 +49,21 @@ LABEL = "le document du prof, p. {page}"  # how a sheet cites it: « D'après �
 
 
 def _status(name: str, size: int | None) -> str:
-    if Path(name).suffix.lower() not in PROCESSED:
-        return "unsupported"
     return "too_large" if (size or 0) > MAX_BYTES else "pending"
+
+
+def _suffix(name: str) -> str:
+    """The file's suffix as kept on disk: its own, if it is a plain one."""
+    suffix = Path(name).suffix.lower()
+    return suffix if suffix[1:].isalnum() and len(suffix) <= 6 else ""
+
+
+def _expected(name: str, content: bytes) -> bool:
+    """The file is what its name says. An unknown format only must not be a page of HTML or JSON."""
+    starts = MAGIC.get(_suffix(name))
+    if starts is not None:
+        return content.startswith(starts)
+    return bool(content) and not content.lstrip()[:1] in (b"<", b"{")
 
 
 def register(conn: psycopg.Connection, snapshot: SchoolSnapshot) -> None:
@@ -72,10 +97,13 @@ def download_pending(conn: psycopg.Connection, client, student_id: str, *, root:
                      pause: float = 1.0, limit: int = MAX_PER_RUN) -> dict[str, int]:
     """Each pending file once. A refusal from École Directe (403) stops the downloads, never the
     collection; a failed file is tried again at the next collections, three times at most."""
+    # The latest lessons first: their files are the ones the home page offers.
     rows = conn.execute(
-        "SELECT document_id, min(kind), min(name) FROM school.attachments WHERE source = %s AND student_id = %s "
-        "AND (status = 'pending' OR (status = 'failed' AND attempts < %s)) GROUP BY document_id "
-        "ORDER BY min(first_seen), document_id LIMIT %s",
+        "SELECT a.document_id, min(a.kind), min(a.name) FROM school.attachments a LEFT JOIN school.lessons l "
+        "ON l.source = a.source AND l.student_id = a.student_id AND l.source_id = a.lesson_source_id "
+        "WHERE a.source = %s AND a.student_id = %s "
+        "AND (a.status = 'pending' OR (a.status = 'failed' AND a.attempts < %s)) GROUP BY a.document_id "
+        "ORDER BY max(l.day) DESC NULLS LAST, min(a.first_seen), a.document_id LIMIT %s",
         (mapping.SOURCE, student_id, MAX_ATTEMPTS, limit),
     ).fetchall()
     done = {"downloaded": 0, "failed": 0}
@@ -111,11 +139,12 @@ def download_pending(conn: psycopg.Connection, client, student_id: str, *, root:
         finally:
             if pause:
                 time.sleep(pause)
-        if not content.startswith(b"%PDF"):
-            _set(conn, student_id, document_id, "unsupported", error="le fichier reçu n'est pas un PDF")
+        if not _expected(name, content):
+            _set(conn, student_id, document_id, "unsupported",
+                 error=f"le fichier reçu n'est pas un {_suffix(name)[1:].upper() or 'fichier'}")
             continue
         sha = hashlib.sha256(content).hexdigest()
-        path = root / f"{sha}.pdf"
+        path = root / f"{sha}{_suffix(name)}"
         if not path.exists():
             root.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
@@ -157,7 +186,8 @@ class AttachmentSource:
             "SELECT DISTINCT ON (a.sha256) a.sha256, a.name, a.path, l.subject_code "
             "FROM school.attachments a JOIN school.lessons l ON l.source = a.source "
             "AND l.student_id = a.student_id AND l.source_id = a.lesson_source_id "
-            "WHERE a.status = 'downloaded' AND a.path IS NOT NULL ORDER BY a.sha256, a.first_seen",
+            "WHERE a.status = 'downloaded' AND a.path IS NOT NULL AND lower(a.path) LIKE '%%.pdf' "
+            "ORDER BY a.sha256, a.first_seen",
         ).fetchall()
         refs = []
         for sha, name, path, subject in rows:

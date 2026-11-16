@@ -71,8 +71,9 @@
   <p><button class="primary">Demander</button></p>
   {#if sent}
     <p class="good" role="status">
-      C'est noté. Le portable la fera à son prochain passage (le soir, ou tout de suite avec
-      <code>skoolathome evening --only-requests</code>), en relisant tout le cours de la matière.
+      C'est noté. L'ordinateur s'y met dans les 5 minutes s'il est allumé (entre 7 h et 22 h), sinon à la
+      soirée, en relisant tout le cours de la matière. Compte une dizaine de minutes : une notification te
+      préviendra dès qu'elle est prête.
     </p>
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
@@ -85,7 +86,7 @@
       <div class="muted">{subjectName(request.subject)} · {request.kind === "revision" ? "révision" : "exercice en plus"} · {when(request.created_at)}</div>
       {#if request.focus}<p style="margin:0.3rem 0">« {request.focus} »</p>{/if}
       {#if request.status === "pending"}
-        <p class="muted">En attente du portable.</p>
+        <p class="muted">En préparation : l'ordinateur s'en occupe dès qu'il est allumé.</p>
       {:else if request.status === "done" && request.sheet_id}
         <div class="row spread">
           <span class="good">Prête</span>

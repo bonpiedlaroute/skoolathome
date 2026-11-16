@@ -97,6 +97,7 @@ class RawGrade(Raw):
     moyenneClasse: str = ""
     minClasse: str = ""
     maxClasse: str = ""
+    nonSignificatif: bool = False  # shown, not counted in the averages
 
 
 class RawGradesData(Raw):

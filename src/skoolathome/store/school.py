@@ -26,8 +26,9 @@ _TABLES = {
 
 def _row(item: Model, extra: dict | None = None) -> dict:
     row = item.model_dump(mode="python")
-    if "documents" in row:
-        row["documents"] = Jsonb(list(row["documents"]))
+    for name in ("documents", "links"):
+        if name in row:
+            row[name] = Jsonb(list(row[name]))
     row["fingerprint"] = item.fingerprint()
     row.update(extra or {})
     return row
@@ -38,10 +39,11 @@ def _upsert(conn: psycopg.Connection, table: str, row: dict) -> str:
     key = _TABLES[table]
     columns = list(row)
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in key)
-    # is_assessment is derived data: compare it too, so a rule change is applied.
+    # is_assessment is derived data: compare it too, so a rule change is applied. The links are
+    # out of the fingerprint (the models never read them): compared on their own.
     changed = " OR ".join(
         f"t.{c} IS DISTINCT FROM EXCLUDED.{c}"
-        for c in ("fingerprint", "is_assessment", "assessment_reason")
+        for c in ("fingerprint", "is_assessment", "assessment_reason", "links")
         if c in row
     )
     sql = (

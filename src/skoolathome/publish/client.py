@@ -55,17 +55,21 @@ class ApiClient:
         self.signer = signer
         self.http = http or httpx.Client(timeout=60)
 
-    def _call(self, method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict:
+    def _call(self, method: str, path: str, payload: dict | None = None, params: dict | None = None,
+              *, content: bytes | None = None, content_type: str = "application/json") -> dict:
         # The signed URL and body must be exactly the ones sent: build them once, use them twice.
         url = self.base_url + path + (f"?{urlencode(params)}" if params else "")
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode() if payload is not None else b""
+        if content is not None:
+            body = content
+        else:
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode() if payload is not None else b""
         # Two identical calls in the same second would give the same event id, and the second
         # would be refused as a replay: a random tag makes each request unique.
         tags = nip98_tags(url, method, body) + [["nonce", token_hex(8)]]
         event = self.signer.sign(NIP98_KIND, "", tags)
         headers = {"Authorization": authorization_header(event)}
         if body:
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
         response = self.http.request(method, url, content=body or None, headers=headers)
         if response.status_code >= 400:
             try:
@@ -104,6 +108,24 @@ class ApiClient:
 
     def answer_explanation(self, explanation_id: str, answer: ExplanationAnswer) -> dict:
         return self._call("POST", f"/api/agent/explanations/{explanation_id}", answer.model_dump(mode="json"))
+
+    def queue(self) -> dict:
+        """What waits online: {"explanations": [...], "requests": [ids]}. An API deployed before
+        the queue only has the explanations."""
+        try:
+            return self._call("GET", "/api/agent/queue")
+        except ApiError as error:
+            if error.status != 404:
+                raise
+            return {"explanations": self.pending_explanations(), "requests": []}
+
+    def missing_documents(self, sha256: list[str]) -> list[str]:
+        return self._call("POST", "/api/agent/documents/missing", {"sha256": sha256})["missing"]
+
+    def upload_document(self, sha256: str, name: str, media_type: str, content: bytes) -> dict:
+        """A teacher's file of the home page, as it is (home.upload_files)."""
+        return self._call("PUT", f"/api/agent/documents/{sha256}", params={"name": name},
+                          content=content, content_type=media_type)
 
     def home(self, page: Home) -> dict:
         """The home page of the PWA (what comes next, grades, sheets to do): replaces the previous one."""

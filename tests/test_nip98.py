@@ -473,3 +473,69 @@ def test_the_laptop_notifies_the_parents(agent, monkeypatch):
     agent.notify("Révisions : réponse fausse signalée", "sheet-generator v5", url="/#/review")
     assert pushed == [({"title": "Révisions : réponse fausse signalée", "body": "sheet-generator v5",
                         "url": "/#/review", "tag": "agent"}, {"roles": ("parent",)})]
+
+
+def test_the_queue_says_what_waits_for_the_laptop(agent, parent):
+    assert agent.queue() == {"explanations": [], "requests": []}
+    made = parent.post("/api/requests", json={"subject": "MATHS", "kind": "extra", "focus": "symétrie"}).json()
+    assert agent.queue()["requests"] == [made["id"]]
+
+
+def test_an_api_without_the_queue_still_gives_the_explanations(agent, monkeypatch):
+    def gone(*args, **kwargs):
+        raise ApiError(404, "Not Found")
+
+    monkeypatch.setattr(agent, "_call", lambda method, path, *a, **k: gone() if path == "/api/agent/queue" else [])
+    assert agent.queue() == {"explanations": [], "requests": []}
+
+
+def home_with_file(sha: str, name: str = "cours.pdf"):
+    from datetime import datetime
+
+    from skoolathome.schema.home import Home
+
+    return Home.model_validate({
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "suggestions": [{"subject_code": "MATHS", "subject": "Mathématiques", "reason": "lesson",
+                         "for_day": "2026-11-16", "request": {"kind": "extra", "focus": "x"},
+                         "lessons": [{"day": "2026-11-12", "documents": [{"name": name, "size": 19, "sha256": sha}],
+                                      "links": [{"url": "https://www.geogebra.org/m/abc", "label": "GeoGebra"}]}]}],
+    })
+
+
+def test_a_teachers_file_goes_online_once_and_opens_from_the_link(agent, parent, api_db):
+    pdf = b"%PDF-1.7 the lesson"
+    sha = hashlib.sha256(pdf).hexdigest()
+    assert agent.missing_documents([sha, sha]) == [sha]
+    with pytest.raises(ApiError) as wrong:
+        agent.upload_document("0" * 64, "cours.pdf", "application/pdf", pdf)
+    assert wrong.value.status == 422  # the name is its sha256: checked
+    agent.upload_document(sha, "cours.pdf", "application/pdf", pdf)
+    assert agent.missing_documents([sha]) == []
+    agent.home(home_with_file(sha))
+    shown = pair_child(parent).get("/api/home").json()
+    link = shown["documents"][sha]
+    assert shown["home"]["suggestions"][0]["lessons"][0]["links"][0]["label"] == "GeoGebra"
+    # The link opens without a session: on the iPad, Safari does not have the app's cookies.
+    opened = browser().get(link)
+    assert opened.status_code == 200 and opened.content == pdf
+    assert opened.headers["content-type"] == "application/pdf"
+    assert opened.headers["content-disposition"] == "inline; filename*=UTF-8''cours.pdf"
+    # A forged or expired link: refused (403, never 401: the service worker would forget its data).
+    assert browser().get(link.replace("sig=", "sig=0")).status_code == 403
+    expired = link.split("?")[0] + "?expires=1&sig=" + link.split("sig=")[1]
+    assert browser().get(expired).status_code == 403
+    assert parent.get(link.split("?")[0]).status_code == 200  # a paired device needs no link
+    # The next page without it: the file is removed.
+    agent.home(home_with_file(hashlib.sha256(b"other").hexdigest()))
+    assert api_db.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
+
+
+def test_a_file_that_could_run_a_script_is_downloaded_not_shown(agent, parent):
+    page = b"<html><script>alert(1)</script></html>"
+    sha = hashlib.sha256(page).hexdigest()
+    agent.upload_document(sha, "activite.html", "text/html", page)
+    opened = parent.get(f"/api/documents/{sha}")
+    assert opened.headers["content-type"] == "application/octet-stream"
+    assert opened.headers["content-disposition"].startswith("attachment;")
+    assert opened.headers["x-content-type-options"] == "nosniff"

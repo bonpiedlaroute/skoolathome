@@ -2,7 +2,7 @@
   // Block 3: the sheets to do before the next lessons and tests, from what the teachers wrote in
   // the notebook once the lesson was over. A sheet already made opens; else the parent asks for it.
   import { api } from "../lib/api";
-  import { frDay, hue, when } from "../lib/home";
+  import { fileSize, frDay, hue, kindOf, when } from "../lib/home";
   import type { HomeLesson, HomeSheet, HomeSuggestion } from "../lib/types";
 
   let {
@@ -12,6 +12,7 @@
     today,
     role,
     onopen,
+    documents = {},
   }: {
     suggestions: HomeSuggestion[];
     sheets: Record<string, HomeSheet>;
@@ -19,6 +20,7 @@
     today: string;
     role: "parent" | "child";
     onopen: (id: string) => void;
+    documents?: Record<string, string>; // sha256 -> link, for the files online
   } = $props();
 
   let asked = $state<string[]>([]);
@@ -45,7 +47,35 @@
     {#if lesson.points.length}
       <ul>{#each lesson.points as point}<li>{point}</li>{/each}</ul>
     {/if}
-    {#if lesson.attachment}<div class="small doc">Le prof a joint son document à la séance.</div>{/if}
+    {#if (lesson.documents?.length ?? 0) > 0 || (lesson.links?.length ?? 0) > 0}
+      <div class="files" aria-label="Pour aller plus loin">
+        {#each lesson.documents ?? [] as file, i (file.sha256 ?? `${file.name}-${i}`)}
+          {@const link = file.sha256 ? documents[file.sha256] : undefined}
+          {#if link}
+            <a class="file" href={link} target="_blank" rel="noopener" title="Ouvrir {file.name}">
+              <span class="kind">{kindOf(file.name)}</span>
+              <span class="label">{file.name}</span>
+              {#if file.size}<span class="size">{fileSize(file.size)}</span>{/if}
+            </a>
+          {:else}
+            <span class="file off" title="Pas encore récupéré : il est sur École Directe">
+              <span class="kind">{kindOf(file.name)}</span>
+              <span class="label">{file.name}</span>
+              <span class="size">sur École Directe</span>
+            </span>
+          {/if}
+        {/each}
+        {#each lesson.links ?? [] as page (page.url)}
+          <a class="file web" href={page.url} target="_blank" rel="noopener noreferrer" title={page.url}>
+            <span class="kind">Lien</span>
+            <span class="label">{page.label}</span>
+            <span class="size" aria-hidden="true">↗</span>
+          </a>
+        {/each}
+      </div>
+    {:else if lesson.attachment}
+      <div class="small doc">Le prof a joint son document à la séance.</div>
+    {/if}
   </div>
 {/snippet}
 
@@ -80,7 +110,7 @@
           </button>
         {:else}
           {#if waiting(s)}
-            <span class="muted small">Fiche demandée : prête au prochain passage de l'ordinateur.</span>
+            <span class="muted small">Fiche demandée : l'ordinateur la prépare (environ 10 minutes s'il est allumé). Une notification préviendra.</span>
           {:else if role === "parent"}
             <button onclick={() => ask(s)}>Demander cette fiche</button>
           {:else}
@@ -111,6 +141,21 @@
   ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }
   li { margin: 0.15rem 0; line-height: 1.4; }
   .doc { margin-top: 0.3rem; color: var(--accent); }
+  .files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+  .file {
+    display: inline-flex; align-items: center; gap: 0.45rem; max-width: 100%; min-height: 2.4rem;
+    padding: 0.3rem 0.7rem 0.3rem 0.35rem; border: 1px solid var(--line); border-radius: 10px;
+    color: var(--ink); text-decoration: none; background: var(--card); font-size: 0.85rem;
+  }
+  a.file:hover { border-color: var(--accent); }
+  .file .kind {
+    flex: none; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    border-radius: 6px; padding: 0.2rem 0.4rem; background: hsl(var(--h) 62% 50% / 0.14);
+  }
+  .file.web .kind { background: var(--hint-bg); }
+  .file .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .file .size { flex: none; color: var(--muted); font-size: 0.75rem; }
+  .file.off { opacity: 0.65; border-style: dashed; }
   details { margin-top: 0.35rem; }
   summary { cursor: pointer; color: var(--accent); min-height: 2rem; display: list-item; }
   .actions { margin-top: 0.6rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }

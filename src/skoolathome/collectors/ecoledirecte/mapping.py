@@ -7,9 +7,10 @@ import html
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 
 from skoolathome.collectors.ecoledirecte import raw
-from skoolathome.schema import Document, Grade, Homework, Lesson, TimetableSlot
+from skoolathome.schema import Document, Grade, Homework, Lesson, Link, TimetableSlot
 
 SOURCE = "ecoledirecte"
 
@@ -17,6 +18,9 @@ _BLOCK_END = re.compile(r"</(p|div|li|h[1-6]|tr)>|<br\s*/?>", re.IGNORECASE)
 _TAG = re.compile(r"<[^>]+>")
 _SPACES = re.compile(r"[ \t ]+")
 _BLANK_LINES = re.compile(r"\n\s*\n+")
+_ANCHOR = re.compile(r"<a\s[^>]*?href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a\s*>", re.IGNORECASE | re.DOTALL)
+_BARE_URL = re.compile(r"https?://[^\s<>\"']+")
+MAX_LINKS = 10
 
 
 def html_to_text(markup: str) -> str:
@@ -33,6 +37,28 @@ def decode_content(encoded: str) -> str:
     if not encoded:
         return ""
     return html_to_text(base64.b64decode(encoded).decode("utf-8"))
+
+
+def links_of(encoded: str) -> tuple[Link, ...]:
+    """The web pages a teacher linked in a lesson: the links of the HTML, then the addresses typed
+    as text. http(s) only; the label is the link's text, or the site's name."""
+    if not encoded:
+        return ()
+    markup = base64.b64decode(encoded).decode("utf-8", "replace")
+    found: dict[str, str] = {}
+    for url, inner in _ANCHOR.findall(markup):
+        url = html.unescape(url).strip()
+        if urlparse(url).scheme in ("http", "https") and url not in found:
+            found[url] = html_to_text(inner)
+    for url in _BARE_URL.findall(html_to_text(markup)):
+        url = url.rstrip(".,;:!?)]")
+        found.setdefault(url, "")
+    links = []
+    for url, label in list(found.items())[:MAX_LINKS]:
+        host = urlparse(url).netloc.removeprefix("www.")
+        label = " ".join(label.split())
+        links.append(Link(url=url[:500], label=(label if label and label != url else host)[:120]))
+    return tuple(links)
 
 
 def _decimal(text: str) -> Decimal | None:
@@ -110,6 +136,7 @@ def map_diary(response: dict, student_id: str) -> tuple[list[Lesson], list[Homew
                     content=content,
                     is_empty=not content and not documents,
                     documents=documents,
+                    links=links_of(subject.contenuDeSeance.contenu),
                 )
             )
         if subject.aFaire is not None:
@@ -150,6 +177,7 @@ def map_grades(response: dict, student_id: str) -> list[Grade]:
             class_average=_decimal(grade.moyenneClasse),
             class_min=_decimal(grade.minClasse),
             class_max=_decimal(grade.maxClasse),
+            significant=not grade.nonSignificatif,
         )
         for grade in raw.RawGrades.model_validate(response).data.notes
     ]

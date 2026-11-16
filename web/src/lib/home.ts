@@ -86,11 +86,18 @@ export function gradeBar(grade: HomeGrade): { low: number; high: number; average
 }
 
 /** The grade against the class's average, on the same scale: « +1,4 », « −0,6 », or null. */
+export function difference(
+  mine: number | null | undefined,
+  theirs: number | null | undefined,
+): { text: string; above: boolean } | null {
+  if (mine === null || mine === undefined || theirs === null || theirs === undefined) return null;
+  const rounded = Math.round((mine - theirs) * 10) / 10;
+  const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "±";
+  return { text: `${sign}${number(Math.abs(rounded))}`, above: rounded >= 0 };
+}
+
 export function gap(grade: HomeGrade): { text: string; above: boolean } | null {
-  if (grade.score === null || grade.class_average === null) return null;
-  const difference = Math.round((grade.score - grade.class_average) * 10) / 10;
-  const sign = difference > 0 ? "+" : difference < 0 ? "−" : "±";
-  return { text: `${sign}${number(Math.abs(difference))}`, above: difference >= 0 };
+  return difference(grade.score, grade.class_average);
 }
 
 const HUES: Record<string, number> = {
@@ -104,4 +111,21 @@ export function hue(code: string): number {
   let hash = 0;
   for (const char of code) hash = (hash * 31 + char.charCodeAt(0)) % 360;
   return hash;
+}
+
+// The type of a teacher's file, as a short badge: « PDF », « Image », « Diaporama »…
+export function kindOf(name: string): string {
+  const suffix = name.toLowerCase().split(".").pop() ?? "";
+  if (suffix === "pdf") return "PDF";
+  if (["png", "jpg", "jpeg", "gif", "webp"].includes(suffix)) return "Image";
+  if (["doc", "docx", "odt"].includes(suffix)) return "Texte";
+  if (["ppt", "pptx", "odp"].includes(suffix)) return "Diaporama";
+  if (["xls", "xlsx", "ods"].includes(suffix)) return "Tableur";
+  if (suffix === "ggb") return "GeoGebra";
+  return "Fichier";
+}
+
+export function fileSize(bytes: number): string {
+  if (bytes < 1_000_000) return `${Math.max(1, Math.round(bytes / 1000))} ko`;
+  return `${(bytes / 1_000_000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Mo`;
 }

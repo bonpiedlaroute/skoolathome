@@ -116,3 +116,30 @@ def test_grade_without_class_figures_yet():
     response["data"]["notes"][0].update(moyenneClasse="", minClasse="", maxClasse="")
     grade = mapping.map_grades(response, "42")[0]
     assert grade.class_average is None and grade.class_min is None and grade.class_max is None
+
+
+def test_the_links_of_a_lesson_are_kept_apart_from_its_fingerprint():
+    import base64
+
+    from skoolathome.collectors.ecoledirecte import mapping
+    from skoolathome.schema import Lesson
+
+    markup = ('<p>Activité : <a href="https://www.geogebra.org/m/abc" target="_blank">Symétrie &amp; GeoGebra</a></p>'
+              '<p><a href="javascript:alert(1)">non</a> vidéo : https://youtu.be/xyz.</p>'
+              '<p><a href="https://www.geogebra.org/m/abc">encore</a> <a href="https://example.org/page">https://example.org/page</a></p>')
+    links = mapping.links_of(base64.b64encode(markup.encode()).decode())
+    assert [(link.url, link.label) for link in links] == [
+        ("https://www.geogebra.org/m/abc", "Symétrie & GeoGebra"), ("https://example.org/page", "example.org"),
+        ("https://youtu.be/xyz", "youtu.be")]
+    assert mapping.links_of("") == ()
+    plain = Lesson(source="ecoledirecte", source_id="1", student_id="4242", day="2026-11-12", subject_code="MATHS",
+                   subject="MATHS", teacher="", content="Symétrie", is_empty=False)
+    # The models never read the links: adding them must not make every lesson look changed.
+    assert plain.model_copy(update={"links": links}).fingerprint() == plain.fingerprint()
+
+
+def test_a_grade_marked_non_significative_is_not_counted():
+    response = load("grades")
+    response["data"]["notes"][0]["nonSignificatif"] = True
+    grades = mapping.map_grades(response, "42")
+    assert grades[0].significant is False and all(g.significant for g in grades[1:])

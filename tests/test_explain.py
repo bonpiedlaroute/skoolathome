@@ -155,3 +155,47 @@ def test_the_evening_and_an_explanation_never_use_the_model_together(tmp_path, m
             assert not second
     with locks.model(wait=False) as free:
         assert free
+
+
+def test_a_requested_sheet_is_made_at_once_and_given_up_after_three_tries(conn, monkeypatch):
+    """The explain timer makes the sheets the parent asked for from the PWA (the same run as
+    `evening --only-requests`). A request that always fails: three tries, then the parent hears
+    once that it waits for the evening."""
+    from contextlib import contextmanager
+
+    from skoolathome import cli
+    from skoolathome.agent import graph, llm
+
+    url = db.database_url(conn.info.dbname)
+    monkeypatch.setattr(cli, "_connect", lambda: psycopg.connect(url, autocommit=True))
+    monkeypatch.setattr(cli, "_embedder", lambda: None)
+    monkeypatch.setattr(llm, "Models", lambda: None)
+    runs, notices = [], []
+
+    class Client:
+        def notify(self, title, body, url="/", tag="agent"):
+            notices.append((title, body, url))
+
+    @contextmanager
+    def sessions():
+        yield Client()
+
+    def failing(run_date, student, services, database_url, **options):
+        runs.append(options)
+        raise RuntimeError("Ollama ne répond pas")
+
+    monkeypatch.setattr(graph, "run", failing)
+    assert cli._make_requested(sessions, []) == 0 and runs == []  # nothing waits: no run
+    for _ in range(5):
+        assert cli._make_requested(sessions, ["pwa-1"]) == 0
+    assert len(runs) == 3 and runs[0] == {"publish": True, "only_requests": True}
+    assert len(notices) == 1 and "Ollama" in notices[0][1] and notices[0][2] == "/#/requests"
+
+    def making(run_date, student, services, database_url, **options):
+        runs.append(options)
+        conn.execute("INSERT INTO agent.requests (id, subject_code, kind, origin, status, sheet_id) "
+                     "VALUES ('pwa-2', 'MATHS', 'extra', 'pwa', 'done', 's-2')")
+
+    monkeypatch.setattr(graph, "run", making)
+    assert cli._make_requested(sessions, ["pwa-1", "pwa-2"]) == 1  # pwa-1 waits for the evening
+    assert len(notices) == 1

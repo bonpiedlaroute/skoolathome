@@ -32,6 +32,10 @@ def cmd_db_migrate(args: argparse.Namespace) -> int:
 
     with _connect() as conn:
         applied = migrate(conn)
+        if "0017" in applied:  # the links of the lessons already collected, from the raw responses
+            from skoolathome.collectors.ecoledirecte import backfill
+
+            print(f"Liens des séances déjà collectées : {backfill.lesson_links(conn)} séance(s).")
     print("Migrations appliquées : " + (", ".join(applied) if applied else "aucune, tout est à jour"))
     return 0
 
@@ -69,7 +73,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0 if result.status in ("ok", "partial") else 1
 
 
-ATTACHMENT_STATES = {"downloaded": "téléchargées", "pending": "à télécharger", "unsupported": "format non traité",
+ATTACHMENT_STATES = {"downloaded": "téléchargées", "pending": "à télécharger", "unsupported": "fichier inattendu",
                      "too_large": "trop grosses", "failed": "en échec"}
 
 
@@ -1067,8 +1071,8 @@ def cmd_proposals_list(args: argparse.Namespace) -> int:
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    """« Je n'ai pas compris » (T29): what the tablet asked, explained now. Run every few minutes by
-    a timer while the laptop is on: one signature when nothing waits, two when something does."""
+    """What the PWA asked, done now: « Je n'ai pas compris » (T29), and the sheets the parent asked
+    for. Run every few minutes by a timer while the laptop is on: one signature when nothing waits."""
     from skoolathome import locks
     from skoolathome.agent import explain, llm
 
@@ -1088,11 +1092,56 @@ def cmd_explain(args: argparse.Namespace) -> int:
             print(problem)
             return 1
         with sessions() as client:
-            done = explain.process(_connect, client, llm.Models(),
+            waiting = client.queue()
+            done = explain.process(_connect, client, llm.Models(), waiting=waiting["explanations"],
                                    progress=lambda m: print(f"{datetime.now():%H:%M}  {m}", flush=True))
+        made = _make_requested(sessions, waiting["requests"])
     if args.verbose or done:
         print(f"{len(done)} explication(s) traitée(s).")
+    if args.verbose or made:
+        print(f"{made} demande(s) de fiche traitée(s).")
     return 0
+
+
+def _make_requested(sessions, waiting: list[str]) -> int:
+    """The sheets the parent asked for from the PWA, made now instead of at the evening: the same
+    run as `evening --only-requests` (no collection, no call to École Directe). The API tells the
+    parent when the sheet arrives. Three tries per request; then the parent is told it waits for
+    the evening. Called with the model's lock held."""
+    from skoolathome import summary
+    from skoolathome.agent import graph, llm
+    from skoolathome.collectors.manual.source import ManualSource
+    from skoolathome.store import db
+    from skoolathome.store import requests as requests_store
+
+    with _connect() as conn:
+        ids = requests_store.to_try(conn, waiting)
+        if not ids:
+            return 0
+        requests_store.tried(conn, ids)
+        student = summary.latest_student(conn)
+    say = lambda message: print(f"{datetime.now():%H:%M}  {message}", flush=True)  # noqa: E731
+    say(f"Fiche(s) demandée(s) depuis l'appli : {len(ids)}, faite(s) maintenant.")
+    services = graph.Services(models=llm.Models(), collector=None, api=sessions, embedder=_embedder(),
+                              material=ManualSource(), progress=say)
+    error = ""
+    try:
+        graph.run(date.today(), student, services, db.database_url(), publish=True, only_requests=True)
+    except Exception as failure:  # noqa: BLE001  (tried again at the next pass)
+        error = f"{type(failure).__name__} : {str(failure)[:200]}"
+        say(f"Fiches demandées : traitement interrompu ({error}).")
+    with _connect() as conn:
+        left = requests_store.still_pending(conn, ids)
+        given_up = requests_store.failed(conn, left, error or "toujours en attente après le traitement")
+    if given_up:
+        try:
+            with sessions() as client:
+                client.notify("Fiche demandée pas encore prête",
+                              f"L'ordinateur n'a pas réussi à la faire ({(error or 'raison inconnue')[:120]}). "
+                              "Elle sera refaite à la prochaine soirée.", url="/#/requests", tag="request-retry")
+        except Exception as failure:  # noqa: BLE001
+            say(f"Prévenir le parent : impossible ({str(failure)[:150]}).")
+    return len(ids) - len(left)
 
 
 EXPLAIN_HOURS = (7, 22)  # when the timer asks the queue; --now for any hour

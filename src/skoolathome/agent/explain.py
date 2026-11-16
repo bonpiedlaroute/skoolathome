@@ -143,13 +143,17 @@ def _save(conn: psycopg.Connection, request: dict, made: Made, trace: str, model
 
 
 def process(connect: Callable[[], psycopg.Connection], client: Any, models: Any,
-            progress: Callable[[str], None] | None = None, conf: config.Config | None = None) -> list[dict]:
-    """Every request waiting online: explained, saved here, sent back (the API notifies)."""
+            progress: Callable[[str], None] | None = None, conf: config.Config | None = None,
+            waiting: list[dict] | None = None) -> list[dict]:
+    """Every request waiting online (`waiting`, or asked for here): explained, saved here, sent
+    back (the API notifies)."""
     say = progress or (lambda message: None)
+    if waiting is not None and not waiting:
+        return []
     conf = conf or config.load()
     generator = conf.model("generator")
     done = []
-    for request in client.pending_explanations():
+    for request in client.pending_explanations() if waiting is None else waiting:
         trace = tracing.trace_id("explanation", request["id"])
         say(f"Explication {request['id']} : question {request['item_id']} de {request['sheet_id']}…")
         with connect() as conn:

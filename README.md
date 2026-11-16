@@ -3,8 +3,9 @@
 Revision sheets for French *collège* students, built every evening from what the teachers wrote in École Directe, by a model that runs on a Linux desktop at home.
 
 - **Grounded in the course.** Every question quotes the lesson or the textbook page it comes from. Deterministic guards check every quote, answer and computation. A judge model from another family then reads each sheet. When the agent cannot make a sheet that passes, it abstains and says why.
-- **Private by design.** École Directe credentials, lesson texts and model calls stay on the Linux desktop. Only two things go online, with no surname: the finished sheets, and the home page (timetable, tests, grades, and the first lines of recent lessons).
-- **One home page.** It shows tomorrow's lessons (Monday's on a Friday) and the tests within three days. It shows the latest grade in each subject, against the class average, lowest and highest grade. It suggests the sheets to do before the coming lessons and tests, from what the teachers wrote once each lesson was over.
+- **Private by design.** École Directe credentials, lesson texts and model calls stay on the Linux desktop. Only two things go online, with no surname: the finished sheets, and the home page (timetable, tests, grades, the first lines of recent lessons, and the files and links the teachers attached to them).
+- **One home page.** It shows tomorrow's lessons (Monday's on a Friday) and the tests within three days. It shows the general average against the class's, then the latest grade and the average of each subject against the class. It suggests the sheets to do before the coming lessons and tests, from what the teachers wrote once each lesson was over, with the teachers' files and links to go further.
+- **A sheet on request.** The parent asks for a sheet from the PWA; the Linux desktop makes it within minutes if it is on, and a notification says when it is ready.
 - **Done on a tablet**, alone (instant correction, hints) or together with a parent (✓ ~ ✗ ratings, parent guide). A question not understood gets its own explanation, from the lesson, within minutes while the computer is on. The parent can ask for a sheet, give instructions in plain French, accept the rules the agent proposes from the teachers' habits, and annotate a few sheets each week.
 - **Measured.** Every sheet has a Langfuse trace, and real answers and reports come back to that trace. A reference set (`make eval`) blocks any prompt or model change that makes the sheets less correct, the search less precise, the instructions misread, or the judge disagree with the parent. Every change is written in a journal, watched for two weeks, and undone in one command (`evals/PROCEDURE.md`). The difficulty of each subject follows the child's success when working alone.
 
@@ -14,7 +15,7 @@ The family-facing app and the command messages are in French.
 
 ```mermaid
 flowchart LR
-  ed[("École Directe<br/>timetable, lessons, homework,<br/>grades, attached PDFs")]
+  ed[("École Directe<br/>timetable, lessons, homework,<br/>grades, attached files")]
 
   subgraph desktop["Linux desktop (private)"]
     direction TB
@@ -47,7 +48,7 @@ flowchart LR
     pwa["PWA (Svelte)<br/>home page, sheets,<br/>together mode, parent view"]
     cron["Daily cron<br/>today's sheets, absence alert"]
   end
-  neon[("Neon Postgres (EU)<br/>home page, sheets, answers, reports,<br/>requests, instructions, rules,<br/>explanations, reviews, devices")]
+  neon[("Neon Postgres (EU)<br/>home page and its files, sheets,<br/>answers, reports, requests, instructions,<br/>rules, explanations, reviews, devices")]
 
   subgraph family["Family devices"]
     tablet["Child's tablet"]
@@ -89,19 +90,19 @@ flowchart LR
 
 | Component | Where | Role |
 |---|---|---|
-| Collector | Linux desktop | Reads École Directe once per evening (one login, never retried in a loop) into `raw` (responses as received) and `school` (a common format). In the same session, it downloads once each PDF a teacher attached to a lesson; the other formats are counted, not processed. |
+| Collector | Linux desktop | Reads École Directe once per evening (one login, never retried in a loop) into `raw` (responses as received) and `school` (a common format). In the same session, it downloads once each file a teacher attached to a lesson. The PDFs are indexed for the sheets; every format (images, Word, slides, GeoGebra) is offered on the home page. It also keeps the web links the teacher put in the lesson. |
 | Evening graph | Linux desktop, LangGraph | Plans the evening's sheets from rules (no model involved), gathers the lesson texts and the closest document pages, has the generator write each sheet in an imposed JSON shape, runs the guards, then the judge. Up to three generations per sheet, else an abstention with its reason. Checkpoints in Postgres: a run stopped half-way resumes. |
 | Graph of instructions | Linux desktop, LangGraph | Turns « le prof d'histoire interroge à chaque cours » into a rule. It asks instead of guessing, and saves nothing until the parent approves. It pauses between steps (`interrupt`), resumed when the parent's reply comes back. |
-| Home page | Linux desktop, then the PWA | After each collection, computed without a model: the coming lessons and tests, the latest grades with the class's figures, and a suggestion per lesson or test with the lesson's first lines. Sent with one signed call, separate from the batch. When the API cannot take it, the next explanation pass sends it again. The PWA picks « tomorrow » from its own clock. |
+| Home page | Linux desktop, then the PWA | After each collection, computed without a model: the coming lessons and tests; the averages of the current period, counted as École Directe does (each grade on 20, weighted by its coefficient, the « non significative » ones left out), and the general average as the subject averages added up and divided by their number; the latest grades with the class's figures; and a suggestion per lesson or test with the lesson's first lines, files and links. The files go online first, one signed call each and only once (4 MB at most per file; a larger one stays on École Directe); then the page, with one signed call, separate from the batch. The API keeps only the files of the latest page and opens each one with a link signed for two days, which also works in Safari on the iPad. When the API cannot take the page, the next explanation pass sends it again. The PWA picks « tomorrow » from its own clock. |
 | Rule proposals | Linux desktop | Once a week, looks in what was collected for a teacher's habit (an oral quiz on the lesson, seen in the lesson notes and the grades), and proposes the matching rule with the facts behind it. No model. A refused proposal never comes back. |
-| Explanations | Linux desktop | Every 5 minutes while the computer is on, one signed call asks the API for « Je n'ai pas compris » requests. Each one is explained from the lesson its sheet came from, under the same guards as a sheet, or refused with its reason. Never at the same time as the evening run: one model user at a time. |
+| Explanations and requested sheets | Linux desktop | Every 5 minutes while the computer is on (7:00 to 22:00), one signed call asks the API what waits: « Je n'ai pas compris » requests and sheets the parent asked for. Each explanation is made from the lesson its sheet came from, under the same guards as a sheet, or refused with its reason. A requested sheet is made at once by the same run as `evening --only-requests` (no École Directe call); the API notifies the parent when it arrives. Three tries per request, then the parent is told it waits for the evening. Never at the same time as the evening run: one model user at a time. |
 | Ollama | Linux desktop | All model calls go through its OpenAI-compatible API: changing the engine is a configuration file. `src/skoolathome/agent/engines/` holds llama.cpp (Vulkan iGPU, or processor only) and OpenVINO (iGPU, NPU), compared with the same model by `make eval` and `skoolathome engines compare`. |
 | App database | Linux desktop, Docker | Postgres with pgvector, separate from Langfuse's, so Langfuse can be wiped without touching the student's data. |
 | Langfuse | Linux desktop, Docker | One trace per sheet, with the subject, the rule, the format, the model and the prompt versions. It also holds the guard and judge scores, the real feedback, the managed prompts with their `production` and `staging` labels, the reference datasets and the `make eval` experiments. Stopped outside the evening run, it frees 3 to 4 GB of RAM. |
 | Remote signer | Railway | [nostr-remote-signer](https://github.com/bonpiedlaroute/nostr-remote-signer): the Linux desktop never holds the key that the API trusts. Every call to the API is a NIP-98 event signed through NIP-46, and the signer only signs that event kind. |
 | API and PWA | Vercel, Neon | FastAPI functions and the Svelte app. Devices pair with a one-time code and keep an HttpOnly session cookie. The Linux desktop authenticates with NIP-98. Web Push carries the evening report, the weekly review and the finished sheets. |
 
-Each evening the Linux desktop makes four signed calls: it fetches the feedback, publishes one batch, sends the home page, and sends the report. The batch carries the sheets, the answers to the parent's requests and instructions, the agent's rule proposals, the list of rules and the weekly review. Between evenings, the explanation timer makes one signed call every 5 minutes, two when it has an explanation to send.
+Each evening the Linux desktop makes four signed calls: it fetches the feedback, publishes one batch, sends the home page, and sends the report. The batch carries the sheets, the answers to the parent's requests and instructions, the agent's rule proposals, the list of rules and the weekly review. Between evenings, the explanation timer makes one signed call every 5 minutes, more when it has an explanation or a requested sheet to send.
 
 ## Installation
 
@@ -264,7 +265,7 @@ loginctl enable-linger "$USER"                # so the user timers run without a
 | `skoolathome material index` | index the PDFs dropped in `data/manual/<subject>/`, and the teachers' attachments |
 | `skoolathome collect [--no-download]` | one collection now; `--no-download` lists the attached files without downloading them |
 | `skoolathome ed attachments` | the files attached to the lessons, and whether each one was downloaded |
-| `skoolathome explain --now` | answer the « Je n'ai pas compris » requests now |
+| `skoolathome explain --now` | answer the « Je n'ai pas compris » requests and make the requested sheets now |
 | `skoolathome proposals run [--dry-run]` | look for the teachers' habits, and propose the matching rules |
 | `skoolathome scores send --fetch` | real feedback to Langfuse now, without waiting for the evening |
 | `skoolathome review [--send]` | the weekly review; sent automatically from Friday |

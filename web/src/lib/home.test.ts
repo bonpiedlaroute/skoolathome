@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { dayTitle, gap, gradeBar, isoDay, nextSchoolDay, number, suggestionsFor, testsSoon } from "./home";
+import {
+  dayTitle,
+  difference,
+  fileSize,
+  gap,
+  gradeBar,
+  isoDay,
+  kindOf,
+  nextSchoolDay,
+  number,
+  suggestionsFor,
+  testsSoon,
+} from "./home";
 import type { HomeGrade, HomePage, HomeSuggestion } from "./types";
 
 const slot = (day: string, subject_code = "MATHS", cancelled = false) => ({
@@ -73,5 +85,23 @@ describe("home page", () => {
     expect(gap(grade({}))).toEqual({ text: "+2,5", above: true });
     expect(gap(grade({ score: 12 }))?.text).toBe("−0,5");
     expect(number(14.25)).toBe("14,25");
+  });
+});
+
+describe("teachers' files and averages", () => {
+  it("names the kind of a file and its size", () => {
+    expect(kindOf("Symétrie centrale.PDF")).toBe("PDF");
+    expect(kindOf("ex 28 p 209.png")).toBe("Image");
+    expect(kindOf("activité.odp")).toBe("Diaporama");
+    expect(kindOf("figure.ggb")).toBe("GeoGebra");
+    expect(kindOf("sans-extension")).toBe("Fichier");
+    expect(fileSize(146_877)).toBe("147 ko");
+    expect(fileSize(3_437_194)).toBe("3,4 Mo");
+  });
+
+  it("says the gap between two averages", () => {
+    expect(difference(16.27, 16.11)).toEqual({ text: "+0,2", above: true });
+    expect(difference(12.1, 14.98)).toEqual({ text: "−2,9", above: false });
+    expect(difference(15, null)).toBeNull();
   });
 });

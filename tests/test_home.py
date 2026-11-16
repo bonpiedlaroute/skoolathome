@@ -152,3 +152,108 @@ def test_sent_once_per_collection(conn):
     conn.execute("INSERT INTO school.collection_runs (source, student_id, status) VALUES ('ecoledirecte', %s, 'ok')",
                  (STUDENT,))
     assert home.pending(conn)
+
+
+# ----------------------------------------------------------------------------- averages
+
+
+def scored(conn, n: int, code: str, value: float, out_of: float, coefficient: float, average: float | None,
+           *, significant: bool = True, period: str = "A001") -> None:
+    conn.execute(
+        "INSERT INTO school.grades (source, student_id, source_id, subject_code, subject, day, kind, title, raw_value, "
+        "value, out_of, coefficient, period, class_average, significant, fingerprint) VALUES ('ecoledirecte', %s, %s, "
+        "%s, %s, %s, 'Contrôle', 'Test', %s, %s, %s, %s, %s, %s, %s, 'fp')",
+        (STUDENT, f"s-{code}-{n}-{value}", code, code, day(n), str(value), value, out_of, coefficient, period,
+         average, significant),
+    )
+
+
+def test_the_averages_are_counted_as_ecole_directe_does(conn):
+    # Maths: 15/20 coef 2 and 8/10 coef 1 (16 on 20): (30 + 16) / 3 = 15.33; the class (12 and 7/10).
+    scored(conn, 3, "MATHS", 15, 20, 2, 12)
+    scored(conn, 4, "MATHS", 8, 10, 1, 7)
+    scored(conn, 5, "MATHS", 2, 20, 1, 11, significant=False)      # « non significative »: shown, not counted
+    scored(conn, 2, "MATHS", 20, 20, 1, 10, period="A000")          # an earlier period
+    scored(conn, 6, "FRANC", 12, 20, 1, 13)
+    scored(conn, 7, "SVT", 18, 20, 1, None)                         # no class average: out of the general one
+    page = home.compute(conn, STUDENT, day(13))
+    subjects = {s.subject_code: s for s in page.grades}
+    assert (subjects["MATHS"].average, subjects["MATHS"].class_average) == (15.33, 12.67)
+    assert (subjects["SVT"].average, subjects["SVT"].class_average) == (18.0, None)
+    # The general average: the subject averages added up, divided by their number (maths, French).
+    assert page.averages.model_dump() == {"period": "", "average": 13.67, "class_average": 12.83, "subjects": 2}
+    assert "Moyenne générale" in home.describe(page, day(13))
+
+
+def test_no_grade_no_average(conn):
+    page = home.compute(conn, STUDENT, day(13))
+    assert page.averages is None and page.grades == []
+
+
+# ------------------------------------------------------------- the teachers' files and links
+
+
+PDF = b"%PDF-1.7 the lesson"
+SHA = __import__("hashlib").sha256(PDF).hexdigest()
+
+
+def attached(conn, tmp_path, *, size: int | None = None) -> None:
+    """Thursday 12: a maths lesson with its PDF (downloaded), a photo (not yet) and a GeoGebra link."""
+    path = tmp_path / f"{SHA}.pdf"
+    path.write_bytes(PDF)
+    slot(conn, 16, 10, "MATHS")
+    lesson(conn, 12, "MATHS", "Symétrie centrale", documents='[{"source_id": "d1", "name": "cours.pdf", "size": 19}, '
+                                                             '{"source_id": "d2", "name": "tableau.png", "size": 900}]')
+    conn.execute("UPDATE school.lessons SET links = %s WHERE source_id = 'l-MATHS-12'",
+                 ('[{"url": "https://www.geogebra.org/m/abc", "label": "Activité 1.1 – GeoGebra"}]',))
+    for document, name, status, sha in [("d1", "cours.pdf", "downloaded", SHA), ("d2", "tableau.png", "pending", None)]:
+        conn.execute(
+            "INSERT INTO school.attachments (source, student_id, lesson_source_id, document_id, name, kind, size, status, "
+            "sha256, path) VALUES ('ecoledirecte', %s, 'l-MATHS-12', %s, %s, 'FICHIER_CDT', %s, %s, %s, %s)",
+            (STUDENT, document, name, size or 19, status, sha, str(path) if sha else None))
+
+
+def test_a_lesson_brings_its_files_and_links(conn, tmp_path):
+    attached(conn, tmp_path)
+    page = home.compute(conn, STUDENT, day(13))
+    [maths] = [s for s in page.suggestions if s.subject_code == "MATHS"]
+    [shown] = maths.lessons
+    assert [(d.name, d.sha256) for d in shown.documents] == [("cours.pdf", SHA), ("tableau.png", None)]
+    assert [(link.url, link.label) for link in shown.links] == [("https://www.geogebra.org/m/abc",
+                                                                 "Activité 1.1 – GeoGebra")]
+
+
+class FilesClient:
+    def __init__(self, missing: list[str]) -> None:
+        self.missing, self.uploaded, self.pages = missing, [], []
+
+    def missing_documents(self, sha256):
+        return [sha for sha in sha256 if sha in self.missing]
+
+    def upload_document(self, sha256, name, media_type, content):
+        self.uploaded.append((sha256, name, media_type, content))
+
+    def home(self, page):
+        self.pages.append(page)
+
+
+def test_the_files_go_online_with_the_page_once(conn, tmp_path):
+    attached(conn, tmp_path)
+    client = FilesClient(missing=[SHA])
+    home.send(conn, client, STUDENT, day(13))
+    assert client.uploaded == [(SHA, "cours.pdf", "application/pdf", PDF)]
+    client = FilesClient(missing=[])  # already online: not sent again
+    home.send(conn, client, STUDENT, day(13))
+    assert client.uploaded == [] and len(client.pages) == 1
+
+
+def test_a_file_that_cannot_go_online_stays_on_ecole_directe(conn, tmp_path, monkeypatch):
+    attached(conn, tmp_path)
+    monkeypatch.setattr(home, "ONLINE_MAX_BYTES", 5)  # the PDF is now too large for one call
+    page = home.compute(conn, STUDENT, day(13))
+    assert all(d.sha256 is None for s in page.suggestions for lesson_ in s.lessons for d in lesson_.documents)
+    (tmp_path / f"{SHA}.pdf").unlink()  # data/ wiped: the same
+    monkeypatch.setattr(home, "ONLINE_MAX_BYTES", 4_000_000)
+    client = FilesClient(missing=[SHA])
+    page = home.send(conn, client, STUDENT, day(13))
+    assert client.uploaded == [] and not home._files(page)

@@ -1,4 +1,5 @@
-# « Je n'ai pas compris » (T29): explain what the tablet asked, while the computer is on.
+# « Je n'ai pas compris » (T29): explain what the tablet asked, while the computer is on. Also
+# makes the sheets the parent asked for from the PWA (7 to 10 minutes each: hence the timeout).
 # Run every few minutes by skoolathome-explain.timer. One NIP-98 signature when nothing waits.
 # Edit WorkingDirectory to your clone, like skoolathome-evening.service.
 [Unit]
@@ -10,5 +11,5 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/boulot/dev/skoolathome
 ExecStart=%h/.local/bin/uv run --frozen skoolathome explain
-TimeoutStartSec=30min
+TimeoutStartSec=60min
 Nice=5

@@ -91,20 +91,27 @@ WORD = Document(source_id="9004", name="fiche.docx", kind="FICHIER_CDT", size=13
 HUGE = Document(source_id="9005", name="exercices.pdf", kind="FICHIER_CDT", size=attachments.MAX_BYTES + 1)
 
 
+PNG = b"\x89PNG\r\n\x1a\n a photo of the board"
+
+
 def test_each_file_is_downloaded_once_whatever_the_collections(conn, tmp_path):
     pdf = write_pdf(tmp_path / "source.pdf", MATHS).read_bytes()
     save(conn, lesson("m1", "", COURSE, PHOTO, WORD, HUGE),
          lesson("m0", "Symétrie centrale.", SAME_AGAIN, day=date(2026, 11, 12)))
-    client = FakeClient({"9001": pdf, "9002": pdf})
+    # Every format is downloaded, for the PWA; a « .docx » that is a page of HTML is not kept.
+    client = FakeClient({"9001": pdf, "9002": pdf, "9003": PNG, "9004": b"<!DOCTYPE html><p>Erreur</p>"})
     root = tmp_path / "attachments"
-    assert attachments.download_pending(conn, client, "4242", root=root, pause=0) == {"downloaded": 1, "failed": 0}
+    assert attachments.download_pending(conn, client, "4242", root=root, pause=0) == {"downloaded": 2, "failed": 0}
     # The same file attached to another lesson (same name, same size): not downloaded again.
-    assert client.calls == ["9001"] and len(list(root.iterdir())) == 1
-    assert attachments.counts(conn, "4242") == {"downloaded": 2, "unsupported": 2, "too_large": 1}
-    assert attachments.unsupported_formats(conn, "4242") == {"png": 1, "docx": 1}
+    assert client.calls == ["9001", "9003", "9004"]
+    assert sorted(path.suffix for path in root.iterdir()) == [".pdf", ".png"]
+    assert attachments.counts(conn, "4242") == {"downloaded": 3, "unsupported": 1, "too_large": 1}
+    assert attachments.unsupported_formats(conn, "4242") == {"docx": 1}
+    # Only the PDFs go to the index: the photo is for the PWA.
+    assert [ref.title for ref in attachments.AttachmentSource(conn).list_documents()] == ["cours-chapitre-4"]
     save(conn, lesson("m1", "", COURSE, PHOTO, WORD, HUGE))  # collected again tomorrow
     attachments.download_pending(conn, client, "4242", root=root, pause=0)
-    assert client.calls == ["9001"]
+    assert client.calls == ["9001", "9003", "9004"]
 
 
 def test_a_failed_download_is_tried_again_three_times_at_most(conn, tmp_path):
@@ -119,7 +126,7 @@ def test_a_failed_download_is_tried_again_three_times_at_most(conn, tmp_path):
 def test_a_file_the_teacher_removed_is_forgotten_for_that_lesson(conn, tmp_path):
     save(conn, lesson("m1", "", COURSE, PHOTO))
     save(conn, lesson("m1", "", PHOTO))
-    assert attachments.counts(conn, "4242") == {"unsupported": 1}
+    assert attachments.counts(conn, "4242") == {"pending": 1}
 
 
 def test_the_collection_counts_what_is_not_processed(conn, tmp_path):
@@ -128,7 +135,7 @@ def test_the_collection_counts_what_is_not_processed(conn, tmp_path):
 
     class WithFiles(SchoolClient):
         def download(self, file_id, file_type="FICHIER_CDT", *, max_bytes):
-            return b"%PDF-1.4"
+            return b"%PDF-1.4" if int(file_id) % 2 == 0 else b"\xff\xd8\xff\xe0 a photo"
 
     client = WithFiles()
     for n, name in enumerate(["diary-2026-11-02", "diary-2026-11-03", "diary-2026-11-04"]):
@@ -140,7 +147,9 @@ def test_the_collection_counts_what_is_not_processed(conn, tmp_path):
     files = result.counts["attachments"]
     assert files["downloaded"] >= 1 and files["new"]["downloaded"] == files["downloaded"]
     stored = conn.execute("SELECT counts FROM school.collection_runs WHERE id = %s", (result.run_id,)).fetchone()[0]
-    assert stored["attachments"]["unsupported_formats"]["jpg"] == files["downloaded"]  # one photo per lesson
+    # The photos are downloaded too (the PWA offers them), next to the PDFs.
+    assert stored["attachments"]["unsupported_formats"] == {}
+    assert {p.suffix for p in tmp_path.glob("*.*")} == {".jpg", ".pdf"}
 
 
 # ------------------------------------------------------------------ indexed, then cited

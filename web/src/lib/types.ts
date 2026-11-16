@@ -229,12 +229,36 @@ export interface HomeSubjectGrades {
   subject_code: string;
   subject: string;
   grades: HomeGrade[]; // the latest first
+  // Over the current period, on 20, weighted by the coefficients (absent from older pages).
+  average?: number | null;
+  class_average?: number | null;
+}
+
+// The subject averages added up and divided by their number: the child's and the class's.
+export interface HomeAverages {
+  period: string;
+  average: number | null;
+  class_average: number | null;
+  subjects: number;
+}
+
+export interface HomeDocument {
+  name: string;
+  size: number | null;
+  sha256: string | null; // null: only on École Directe
+}
+
+export interface HomeLink {
+  url: string;
+  label: string;
 }
 
 export interface HomeLesson {
   day: string;
   points: string[];
   attachment: boolean;
+  documents?: HomeDocument[];
+  links?: HomeLink[];
 }
 
 export interface HomeSuggestion {
@@ -254,6 +278,7 @@ export interface HomePage {
   holidays: string[];
   tests: HomeTest[];
   grades: HomeSubjectGrades[];
+  averages?: HomeAverages | null;
   suggestions: HomeSuggestion[];
 }
 
@@ -270,4 +295,5 @@ export interface HomeData {
   received_at?: string;
   sheets?: Record<string, HomeSheet>;
   requested?: string[]; // subjects with a sheet asked for and not made yet
+  documents?: Record<string, string>; // sha256 -> a link to the teacher's file, valid two days
 }
