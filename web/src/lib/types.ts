@@ -58,6 +58,7 @@ export interface Sheet {
   trace_id?: string | null; // the generation's trace in Langfuse: sent back with each answer (T22)
   recap?: Recap | null;
   items: Item[];
+  pdf?: string; // signed link to the sheet as a PDF, to print (two days)
 }
 
 export interface SheetSummary {
@@ -72,6 +73,7 @@ export interface SheetSummary {
   answered: number;
   correct: number;
   to_review: number;
+  pdf?: string;
 }
 
 export interface Device {
@@ -143,6 +145,7 @@ export interface SheetRequest {
   kind: RequestKind;
   focus: string;
   items: number | null;
+  minutes?: number | null; // how long the parent wanted it
   created_at: string;
   status: "pending" | "done" | "abstained";
   sheet_id: string | null;

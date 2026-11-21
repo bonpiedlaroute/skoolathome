@@ -114,6 +114,9 @@ class TaskState(TypedDict, total=False):
     overview: str            # a request: what the class did in the subject, from the summaries
     sheet: dict | None       # the last generated sheet, before the guards
     failures: list[str]      # why the last attempt failed: fed back to the model
+    kept: dict | None        # the questions that passed: the next attempt completes them
+    asked: int               # questions asked for, in all
+    dropped: list[str]       # the last writing: questions badly built, parts lost
     guard_log: Annotated[list[dict], operator.add]  # every guard and judge result of every attempt
     attempts: int
     prompt_version: str
@@ -139,6 +142,8 @@ class Outcome(TypedDict, total=False):
     sheet: dict | None
     attempts: int
     failures: list[str]
+    kept: dict | None
+    asked: int
     guard_log: list[dict]
     prompt_version: str
     trace_id: str
@@ -152,7 +157,7 @@ class Outcome(TypedDict, total=False):
 class Services:
     """What the graph uses outside itself. Tests give fakes."""
     models: Any                                    # text() and structured(): agent.llm.Models
-    collector: Callable[[], dict] | None = None    # one École Directe collection; None: --no-collect
+    collector: Callable[[], dict] | None = None    # one École Directe collection; None: collected apart (collect --publish)
     api: Callable[[], AbstractContextManager] | None = None  # an ApiClient in a bunker session
     embedder: Any = None                           # agent.embeddings.LocalEmbedder
     material: Any = None                           # collectors.manual.ManualSource
@@ -213,14 +218,20 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
     def collect(state: EveningState) -> dict:
         with step("collect", state) as span:
             if services.collector is None:
-                result = {"status": "skipped"}
+                # Collected apart, on its own timer: the evening says which data it works on.
+                result = {"status": "skipped", **_last_collection(connect)}
             else:
                 try:
                     result = services.collector()
                 except Exception as error:  # noqa: BLE001  (the evening goes on with what is already known)
                     result = {"status": "failed", "errors": [{"kind": "run", "ref": "", "error": str(error)[:300]}]}
             output(span, result, warning=result["status"] not in ("ok", "skipped"))
-        say("Collecte École Directe : " + ("sautée" if result["status"] == "skipped" else result["status"]))
+        if result["status"] == "skipped":
+            last = result.get("last_at")
+            say("Collecte École Directe : à part" + (f" (dernière réussie : {fr_day(date.fromisoformat(last[:10]))} "
+                                                       f"à {last[11:16]})" if last else " (aucune encore)"))
+        else:
+            say(f"Collecte École Directe : {result['status']}")
         update: dict = {"collect": result}
         if result.get("student_id") and not state.get("student_id"):
             update["student_id"] = result["student_id"]
@@ -498,13 +509,18 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
         prompt = prompts.get(shape.prompt)
         attempt = state.get("attempts", 0) + 1
         items = shape.item_count(task["target_minutes"], making.chars(state["sources"]), task.get("items"))
-        say(f"{task['id']} : écriture, essai {attempt}" + (f", {items} questions" if shape.scales else "") + "…")
+        kept = state.get("kept")
+        missing = items - len((kept or {}).get("items", []))
+        planned = len(making.parts(missing, state["sources"])) if shape.scales else 1
+        say(f"{task['id']} : écriture, essai {attempt}"
+            + (f", {missing} questions" + (f" à ajouter aux {items - missing} retenues" if kept else "")
+               + (f", en {planned} parties" if planned > 1 else "") if shape.scales else "") + "…")
         started = time.monotonic()
         with node("generate", state, prompt=prompt.client, input={"attempt": attempt},
                   metadata={f"prompt.{shape.prompt}": prompt.label}) as span:
             written = making.write(models, prompt, task, state["sources"], state.get("labels") or {},
                                    _context(task, state["sources"], state.get("overview", ""), state.get("labels")),
-                                   state.get("failures") or [], state["trace_id"])
+                                   state.get("failures") or [], state["trace_id"], kept)
             sheet = written.sheet
             if sheet is None:
                 reasons = written.failures
@@ -513,13 +529,17 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
                 result = guards.GuardResult("format", False, reasons)
                 tracing.score(state["trace_id"], "guard.format", False, f"essai {attempt} : {reasons[0][:400]}")
                 return {"sheet": None, "failures": reasons, "attempts": attempt, "prompt_version": prompt.label,
+                        "kept": None, "asked": written.items, "dropped": [],
                         "guard_log": [{"attempt": attempt, **result.as_json()}], "memory": [report.memory_sample()]}
             output(span, sheet.model_dump(mode="json"))
-        say(f"{task['id']} : fiche écrite en {round(time.monotonic() - started)} s")
-        tracing.score(state["trace_id"], "guard.format", True, f"essai {attempt}")
+        say(f"{task['id']} : fiche écrite en {round(time.monotonic() - started)} s, {len(sheet.items)} questions"
+            + (f" ({len(written.dropped)} écartée(s) à l'écriture)" if written.dropped else ""))
+        tracing.score(state["trace_id"], "guard.format", True,
+                      f"essai {attempt}" + (" : " + " ; ".join(written.dropped)[:400] if written.dropped else ""))
         return {"sheet": sheet.model_dump(mode="json"), "failures": [], "attempts": attempt,
                 "prompt_version": prompt.label, "memory": [report.memory_sample()],
-                "guard_log": [{"attempt": attempt, "name": "format", "ok": True, "reasons": []}]}
+                "asked": written.items, "dropped": written.dropped,
+                "guard_log": [{"attempt": attempt, "name": "format", "ok": True, "reasons": written.dropped}]}
 
     def check(state: TaskState) -> dict:
         if state.get("sheet") is None:
@@ -531,12 +551,19 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             for result in results:
                 tracing.score(state["trace_id"], f"guard.{result.name}", result.ok,
                               f"essai {state['attempts']}" + (" : " + " ; ".join(result.reasons)[:400] if result.reasons else ""))
-            failures = [reason for result in results for reason in result.reasons]
-            output(span, {r.name: r.ok for r in results}, warning=bool(failures))
-        say(f"{task['id']} : garde-fous OK" if not failures else
+            asked = state.get("asked") or len(sheet.items)
+            settled = making.settle(sheet, results, task, asked, last=state["attempts"] >= MAX_GENERATIONS,
+                                    notes=state.get("dropped") or [])
+            failures = settled.failures
+            output(span, {r.name: r.ok for r in results} | ({"left_out": settled.dropped} if settled.dropped else {}),
+                   warning=bool(failures))
+        left_out = f", {len(settled.dropped)} question(s) écartée(s)" if settled.dropped else ""
+        say(f"{task['id']} : garde-fous OK ({len(settled.sheet.items)} questions{left_out})" if settled.sheet else
             f"{task['id']} : refusée par les garde-fous ({len(failures)} motif(s), dont : {failures[0][:110]})")
-        return {"failures": failures,
-                "guard_log": [{"attempt": state["attempts"], **result.as_json()} for result in results]}
+        log = [{"attempt": state["attempts"], **result.as_json()} for result in results]
+        if settled.sheet is None:
+            return {"failures": failures, "kept": settled.kept, "guard_log": log}
+        return {"failures": [], "kept": None, "sheet": settled.sheet.model_dump(mode="json"), "guard_log": log}
 
     def after_guards(state: TaskState) -> str:
         if not state.get("failures"):
@@ -587,20 +614,34 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             # The guards passed: a judge that cannot answer does not block the sheet. Counted.
             record |= {"available": False, "error": error}
             failures: list[str] = []
+            kept = None
             tracing.score(outcome["trace_id"], "judge.available", False, error)
             status = "ready"
         else:
-            failures = judged.failures
-            record |= {"available": True, "ok": not failures, "reasons": failures, "verdict": verdict.model_dump()}
+            problems = judged.failures
+            record |= {"available": True, "ok": not problems, "reasons": problems, "verdict": verdict.model_dump()}
             for name, rate in judge.rates(verdict, sheet).items():
                 tracing.score(outcome["trace_id"], f"judge.{name}", rate)
-            tracing.score(outcome["trace_id"], "judge.ok", not failures,
-                          f"essai {attempt}" + (" : " + " ; ".join(failures)[:400] if failures else ""))
-            status = "ready" if not failures else "rejected" if attempt < MAX_GENERATIONS else "abstained"
+            tracing.score(outcome["trace_id"], "judge.ok", not problems,
+                          f"essai {attempt}" + (" : " + " ; ".join(problems)[:400] if problems else ""))
+            # The questions the judge refuses are left out, like those of the guards.
+            settled = making.settle(sheet, [guards.GuardResult("judge", not problems, problems)], task,
+                                    outcome.get("asked") or len(sheet.items), last=attempt >= MAX_GENERATIONS)
+            failures = settled.failures
+            if settled.sheet is not None:
+                sheet, status = settled.sheet, "ready"
+                if settled.dropped:
+                    record["left_out"] = settled.dropped
+            else:
+                status = "rejected" if attempt < MAX_GENERATIONS else "abstained"
+            kept = settled.kept
         updated: Outcome = {**outcome, "status": status, "judge": record, "failures": failures,
+                            "sheet": sheet.model_dump(mode="json"), "kept": kept,
                             "guard_log": outcome["guard_log"] + [{"attempt": attempt, "name": "judge",
                                                                   "ok": not failures, "reasons": failures}]}
-        say(f"{task['id']} : " + {"ready": "acceptée" + (" (correcteur indisponible)" if verdict is None else ""),
+        left_out = record.get("left_out") or []
+        say(f"{task['id']} : " + {"ready": "acceptée" + (" (correcteur indisponible)" if verdict is None else "")
+                                  + (f", {len(left_out)} question(s) écartée(s) par le correcteur" if left_out else ""),
                                   "rejected": "renvoyée par le correcteur",
                                   "abstained": "abstention après le correcteur"}[status]
             + (f" ({failures[0][:110]})" if failures else ""))
@@ -622,7 +663,7 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
             Send("task", {
                 "run_date": o["run_date"], "student_id": o["student_id"], "task": o["task"], "trace_id": o["trace_id"],
                 "attempts": o["attempts"], "failures": o["failures"], "sources": o["sources"], "labels": o["labels"],
-                "overview": o.get("overview", ""),
+                "overview": o.get("overview", ""), "kept": o.get("kept"), "asked": o.get("asked", 0),
                 "sheet": None, "guard_log": o["guard_log"], "prompt_version": o["prompt_version"],
             })
             for o in rejected
@@ -769,6 +810,17 @@ def build(services: Services, connect: Connect, conf: config.Config | None = Non
 # ----------------------------------------------------------------------------- helpers
 
 
+def _last_collection(connect: Callable[[], psycopg.Connection]) -> dict:
+    """The latest successful collection: when the evening's data was collected."""
+    try:
+        with connect() as conn:
+            row = conn.execute("SELECT max(finished_at) FROM school.collection_runs WHERE status IN ('ok', 'partial')"
+                               ).fetchone()
+    except psycopg.Error:
+        return {}
+    return {"last_at": row[0].astimezone().isoformat()} if row and row[0] else {}
+
+
 def _test_day(written: str | None, today: date, due_on: date) -> date | None:
     """The date the model read, if it is a plausible one."""
     try:
@@ -906,6 +958,7 @@ def _outcome(state: TaskState, status: str, reason: str = "") -> Outcome:
         "run_date": state["run_date"], "student_id": state["student_id"], "task": state["task"],
         "status": status, "reason": reason, "sheet": state.get("sheet"), "attempts": state.get("attempts", 0),
         "failures": state.get("failures") or [], "guard_log": state.get("guard_log") or [],
+        "kept": state.get("kept"), "asked": state.get("asked", 0),
         "prompt_version": state.get("prompt_version", ""), "trace_id": state["trace_id"],
         "sources": state.get("sources") or {}, "labels": state.get("labels") or {},
         "overview": state.get("overview", ""), "judge": None,
@@ -944,7 +997,8 @@ def _store(conn: psycopg.Connection, outcome: Outcome, *, model: str) -> None:
     )
     if task.get("request_id"):
         requests_store.answer(conn, task["request_id"], "done" if ready else "abstained",
-                              sheet_id=task["id"] if ready else None, reason=outcome.get("reason", ""))
+                              sheet_id=task["id"] if ready else None,
+                              reason=making.for_the_parent(outcome.get("reason", "")))  # what goes online
 
 
 # ------------------------------------------------------------------------------ running

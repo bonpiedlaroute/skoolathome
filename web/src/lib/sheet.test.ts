@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { basedOn, formatLabel, quoteSource } from "./sheet";
+import { basedOn, formatLabel, isPast, quoteSource } from "./sheet";
 
 const labels = {
   "lesson:2026-11-04:HI-GE": "ton cours du mardi 4/11",
@@ -26,5 +26,16 @@ describe("sheet", () => {
   it("says where a quote comes from", () => {
     expect(quoteSource({ source_labels: labels }, { quote: { source_id: "doc:3:p86", excerpt: "…" } })).toBe("ton manuel p. 86");
     expect(quoteSource({ source_labels: labels }, { quote: null })).toBe("ton cours");
+  });
+});
+
+describe("isPast", () => {
+  it("puts a sheet away once its date has gone", () => {
+    expect(isPast({ visible_from: "2026-11-23", due_by: "2026-11-26" }, "2026-11-26")).toBe(false);
+    expect(isPast({ visible_from: "2026-11-23", due_by: "2026-11-26" }, "2026-11-27")).toBe(true);
+  });
+  it("keeps a sheet without a date for a week", () => {
+    expect(isPast({ visible_from: "2026-11-13", due_by: null }, "2026-11-20")).toBe(false);
+    expect(isPast({ visible_from: "2026-11-13", due_by: null }, "2026-11-21")).toBe(true);
   });
 });

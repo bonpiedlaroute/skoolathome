@@ -371,6 +371,19 @@ def _without(page: Home, missing: set[str]) -> Home:
         s.model_copy(update={"lessons": [lesson(item) for item in s.lessons]}) for s in page.suggestions]})
 
 
+def plain_name(name: str) -> str:
+    """The file's name as it travels in the signed URL: letters, digits, « . », « - », « _ ». Vercel
+    hands the API a query string re-encoded when it has accents, spaces or brackets, and the
+    signature no longer matches. Only the name of the downloaded file; the PWA shows the real one."""
+    import unicodedata
+
+    ascii_ = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    stem, dot, suffix = ascii_.rpartition(".")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", stem if dot else ascii_).strip("-") or "document"
+    suffix = re.sub(r"[^A-Za-z0-9]+", "", suffix) if dot else ""
+    return (stem[:150] + (f".{suffix[:8]}" if suffix else ""))
+
+
 def upload_files(conn: psycopg.Connection, client, page: Home) -> Home:
     """Each file of the page the API does not have yet: one signed call per file. The API keeps
     only the files of the latest page."""
@@ -391,7 +404,7 @@ def upload_files(conn: psycopg.Connection, client, page: Home) -> Home:
             failed.add(sha)
             continue
         kind = mimetypes.guess_type(name or path)[0] or "application/octet-stream"
-        client.upload_document(sha, (name or Path(path).name)[:160], kind, content)
+        client.upload_document(sha, plain_name(name or Path(path).name), kind, content)
     return _without(page, failed) if failed else page
 
 

@@ -8,16 +8,17 @@ import psycopg
 
 from skoolathome.schema.request import NewRequest, RequestUpdate
 
-_COLUMNS = "id, subject_code, kind, focus, items, origin, created_at, status, sheet_id, reason"
+_COLUMNS = "id, subject_code, kind, focus, items, minutes, origin, created_at, status, sheet_id, reason"
 
 
 def create(conn: psycopg.Connection, request: NewRequest, *, student_id: str | None, origin: str = "cli",
            request_id: str | None = None, created_at=None) -> str:
     request_id = request_id or f"{origin}-{token_hex(6)}"
     conn.execute(
-        "INSERT INTO agent.requests (id, student_id, subject_code, kind, focus, items, origin, created_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, coalesce(%s, now())) ON CONFLICT (id) DO NOTHING",
-        (request_id, student_id, request.subject, request.kind, request.focus, request.items, origin, created_at),
+        "INSERT INTO agent.requests (id, student_id, subject_code, kind, focus, items, minutes, origin, created_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now())) ON CONFLICT (id) DO NOTHING",
+        (request_id, student_id, request.subject, request.kind, request.focus, request.items, request.minutes,
+         origin, created_at),
     )
     return request_id
 
@@ -96,3 +97,15 @@ def failed(conn: psycopg.Connection, ids: list[str], error: str, tries: int = TR
         if last:
             given_up.append(request_id)
     return given_up
+
+
+def exhausted(conn: psycopg.Connection, ids: list[str], tries: int = TRIES) -> list[tuple[str, str]]:
+    """The requests whose last try was cut off before it could say anything (the timer's own
+    timeout kills the run): given up now, so that the parent hears it once. (id, last error)."""
+    if not ids:
+        return []
+    rows = conn.execute(
+        "UPDATE agent.request_tries SET gave_up_at = now() WHERE id = ANY(%s) AND tries >= %s AND gave_up_at IS NULL "
+        "RETURNING id, last_error", (ids, tries),
+    ).fetchall()
+    return [(request_id, error) for request_id, error in rows]

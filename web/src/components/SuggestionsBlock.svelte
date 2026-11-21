@@ -33,7 +33,8 @@
   async function ask(s: HomeSuggestion) {
     failed = "";
     try {
-      await api.createRequest(s.subject_code, s.request.kind, s.request.focus, null);
+      // A test coming: the complete preparation (45 min, to print too); otherwise a short sheet.
+      await api.createRequest(s.subject_code, s.request.kind, s.request.focus, s.reason === "test" ? 45 : null);
       asked = [...asked, key(s)];
     } catch {
       failed = "Impossible d'envoyer la demande. Vérifie la connexion.";

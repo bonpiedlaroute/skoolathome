@@ -22,7 +22,7 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from skoolathome.api import auth, nip98, push
+from skoolathome.api import auth, nip98, pdf, push
 from skoolathome.api.auth import COOKIE_NAME, Device, current_device, get_conn, parent_device
 from skoolathome.correction import check
 from skoolathome.progress import ItemProgress
@@ -264,13 +264,15 @@ def sheet_progress(sheet: dict, counters: dict[tuple[str, str], ItemProgress]) -
 
 @app.get("/api/sheets")
 def list_sheets(device: Device = Depends(current_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
-    """Sheets whose display date has come, most recent first, with the progress made on each."""
+    """Sheets whose display date has come and that the parent did not remove, most recent first,
+    with the progress made on each and a link to their PDF."""
     rows = conn.execute(
         "SELECT id, subject, title, type, visible_from, due_by, body FROM sheets "
-        "WHERE visible_from <= %s ORDER BY visible_from DESC, id LIMIT 60",
+        "WHERE visible_from <= %s AND hidden_at IS NULL ORDER BY visible_from DESC, id LIMIT 60",
         (today(),),
     ).fetchall()
     counters = item_progress(conn, [r[0] for r in rows])
+    key, now = _app_key(conn, DOCUMENTS_KEY), time.time()
     listed = []
     for sheet_id, subject, title, kind, visible_from, due_by, body in rows:
         progress = sheet_progress(body, counters).values()
@@ -281,6 +283,7 @@ def list_sheets(device: Device = Depends(current_device), conn: psycopg.Connecti
             "answered": sum(1 for p in progress if p["solo_done"] or p["rating"]),
             "correct": sum(1 for p in progress if p["solo_right"] or p["rating"] == "good"),
             "to_review": sum(1 for p in progress if p["to_review"]),
+            "pdf": sheet_pdf_link(key, sheet_id, now),
         })
     return listed
 
@@ -300,7 +303,56 @@ def get_sheet(
 ) -> dict:
     # Every device receives the parent guide: in together mode the parent reads it on the
     # tablet. The page shows it only after a tap.
-    return _load_sheet(conn, sheet_id)
+    return {**_load_sheet(conn, sheet_id), "pdf": sheet_pdf_link(_app_key(conn, DOCUMENTS_KEY), sheet_id, time.time())}
+
+
+@app.delete("/api/sheets/{sheet_id}", status_code=204)
+def hide_sheet(sheet_id: str, device: Device = Depends(parent_device),
+               conn: psycopg.Connection = Depends(get_conn)) -> Response:
+    """« Retirer » : the sheet leaves the list of every device. Its answers stay, for the laptop and
+    the weekly review; the laptop never publishes it again under the same id."""
+    if conn.execute("UPDATE sheets SET hidden_at = coalesce(hidden_at, now()) WHERE id = %s",
+                    (sheet_id,)).rowcount == 0:
+        raise HTTPException(404, "unknown sheet")
+    return Response(status_code=204)
+
+
+@app.post("/api/sheets/{sheet_id}/restore")
+def restore_sheet(sheet_id: str, device: Device = Depends(parent_device),
+                  conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """Undo « Retirer »."""
+    if conn.execute("UPDATE sheets SET hidden_at = NULL WHERE id = %s", (sheet_id,)).rowcount == 0:
+        raise HTTPException(404, "unknown sheet")
+    return {"ok": True}
+
+
+def sheet_pdf_link(key: bytes, sheet_id: str, now: float) -> str:
+    """The sheet's PDF, openable for two days without a session, like a teacher's file: on the
+    iPad, it opens in Safari, which does not share the installed app's cookies."""
+    expires = (int(now) // 3600 + 1) * 3600 + DOCUMENT_LINK_SECONDS
+    signature = _document_signature(key, f"sheet:{sheet_id}", expires)
+    return f"/api/pdf/sheets/{quote(sheet_id, safe='')}?expires={expires}&sig={signature}"
+
+
+@app.get("/api/pdf/sheets/{sheet_id}")
+def get_sheet_pdf(sheet_id: str, expires: int = 0, sig: str = "", conn: psycopg.Connection = Depends(get_conn),
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+    """The sheet to print: questions with room to answer, the correction on its own page. Never
+    401 (see get_document)."""
+    valid = (sig and expires >= time.time()
+             and hmac.compare_digest(sig, _document_signature(_app_key(conn, DOCUMENTS_KEY), f"sheet:{sheet_id}",
+                                                              expires)))
+    if not valid:
+        try:
+            current_device(conn, session)
+        except HTTPException:
+            raise HTTPException(403, "link expired: open the sheet again from the app") from None
+    sheet = Sheet.model_validate(_load_sheet(conn, sheet_id))
+    return Response(content=pdf.sheet_pdf(sheet), media_type="application/pdf", headers={
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(pdf.file_name(sheet))}",
+        "Cache-Control": "private, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.get("/api/sheets/{sheet_id}/progress")
@@ -391,10 +443,10 @@ def finish_sheet(
 
 def _request_json(row) -> dict:
     return {"id": row[0], "subject": row[1], "kind": row[2], "focus": row[3], "items": row[4],
-            "created_at": row[5], "status": row[6], "sheet_id": row[7], "reason": row[8]}
+            "created_at": row[5], "status": row[6], "sheet_id": row[7], "reason": row[8], "minutes": row[9]}
 
 
-_REQUEST_COLUMNS = "id, subject, kind, focus, items, created_at, status, sheet_id, reason"
+_REQUEST_COLUMNS = "id, subject, kind, focus, items, created_at, status, sheet_id, reason, minutes"
 
 
 @app.post("/api/requests", status_code=201)
@@ -403,9 +455,10 @@ def create_request(
 ) -> dict:
     """A sheet asked for by the parent: made at the laptop's next run."""
     row = conn.execute(
-        "INSERT INTO sheet_requests (id, subject, kind, focus, items, created_by) VALUES (%s, %s, %s, %s, %s, %s) "
-        f"RETURNING {_REQUEST_COLUMNS}",
-        (f"pwa-{secrets.token_hex(6)}", body.subject, body.kind, body.focus.strip(), body.items, device.id),
+        "INSERT INTO sheet_requests (id, subject, kind, focus, items, minutes, created_by) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_REQUEST_COLUMNS}",
+        (f"pwa-{secrets.token_hex(6)}", body.subject, body.kind, body.focus.strip(), body.items, body.minutes,
+         device.id),
     ).fetchone()
     return _request_json(row)
 
@@ -622,8 +675,8 @@ def get_home(device: Device = Depends(current_device), conn: psycopg.Connection 
     ids = sorted({sheet for s in body.get("suggestions", []) for sheet in s.get("sheet_ids", [])})
     sheets = {}
     if ids:
-        rows = conn.execute("SELECT id, title, body FROM sheets WHERE id = ANY(%s) AND visible_from <= %s",
-                            (ids, today())).fetchall()
+        rows = conn.execute("SELECT id, title, body FROM sheets WHERE id = ANY(%s) AND visible_from <= %s "
+                            "AND hidden_at IS NULL", (ids, today())).fetchall()
         counters = item_progress(conn, [r[0] for r in rows])
         for sheet_id, title, sheet in rows:
             progress = sheet_progress(sheet, counters).values()
@@ -975,7 +1028,7 @@ def feedback(
         window,
     ).fetchall()
     requests = conn.execute(
-        f"SELECT id, subject, kind, focus, items, created_at FROM sheet_requests WHERE {received('created_at')} "
+        f"SELECT id, subject, kind, focus, items, created_at, minutes FROM sheet_requests WHERE {received('created_at')} "
         "ORDER BY created_at",
         window,
     ).fetchall()
@@ -1022,7 +1075,8 @@ def feedback(
             for r in finishes
         ],
         "requests": [
-            {"id": r[0], "subject": r[1], "kind": r[2], "focus": r[3], "items": r[4], "created_at": r[5]}
+            {"id": r[0], "subject": r[1], "kind": r[2], "focus": r[3], "items": r[4], "created_at": r[5],
+             "minutes": r[6]}
             for r in requests
         ],
         "instructions": [{"id": r[0], "text": r[1], "rule": r[2], "created_at": r[3]} for r in instructions],

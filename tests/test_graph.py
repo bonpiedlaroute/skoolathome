@@ -202,7 +202,9 @@ def test_the_judge_sends_a_sheet_back_with_its_problem(conn, url):
     [result] = run(url, models).results
     assert result["status"] == "ready" and result["attempts"] == 2
     second_prompt = models.prompts[1][1][-1]["content"]
-    assert "q1 : (correcteur) la question parle d'autre chose" in second_prompt
+    # The other two questions are kept: the second call writes the one missing, told why q1 went.
+    assert "(correcteur) la question parle d'autre chose" in second_prompt and "Fiche : 1 questions" in second_prompt
+    assert "Questions déjà dans la fiche" in second_prompt
     log = conn.execute("SELECT guards FROM agent.sheets").fetchone()[0]
     assert [(g["attempt"], g["ok"]) for g in log if g["name"] == "judge"] == [(1, False), (2, True)]
 
@@ -280,13 +282,14 @@ def test_the_evening_says_what_it_is_doing(conn, url):
     add_lesson(conn, "m1", "MATHS", MATHS)
     said: list[str] = []
     run(url, FakeModels(verdicts=[REJECTED, APPROVED]), progress=said.append)
-    assert said[0] == "Collecte École Directe : sautée"
+    assert said[0] == "Collecte École Directe : à part (aucune encore)"  # its own timer
     assert "Plan : 1 fiche(s) à faire ce soir, 0 tâche(s) sautée(s), 0 déjà faite(s)" in said
     task = "2026-11-13-maths-exercises"
     assert [m for m in said if m.startswith(task) and "…" not in m][:4] == [
-        f"{task} : fiche écrite en 0 s", f"{task} : garde-fous OK",
+        f"{task} : fiche écrite en 0 s, 3 questions", f"{task} : garde-fous OK (3 questions)",
         f"{task} : renvoyée par le correcteur (q1 : (correcteur) la question parle d'autre chose que la citation)",
-        f"{task} : fiche écrite en 0 s"]
+        f"{task} : fiche écrite en 0 s, 3 questions"]
+    assert f"{task} : écriture, essai 2, 1 questions à ajouter aux 2 retenues…" in said
 
 
 def test_the_plan_decides_the_tasks_and_says_why_one_is_missing(conn, url):
@@ -355,8 +358,8 @@ def test_ambiguous_homework_read_by_the_model_brings_a_revision(conn, url):
     evening = run(url, models)
     assert conn.execute("SELECT is_assessment, day FROM agent.assessment_checks").fetchone() == (True, date(2026, 11, 16))
     made = [task for task, _ in statuses(evening)]
-    assert "2026-11-16-maths-test-j1" in made and "2026-11-16-maths-test-j2" in made
-    assert any(s["task"] == "2026-11-16-maths-test-j4" and "trop tard" in s["reason"] for s in evening.plan["skipped"])
+    # Known three days before: the complete preparation, shown at once.
+    assert "2026-11-16-maths-test-j3" in made
     # Asked once per version of the homework text.
     run(url, models, restart=True)
     assert sum(1 for _, what, _ in models.log if what == "AssessmentVerdict") == 1

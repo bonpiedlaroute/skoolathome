@@ -11,10 +11,11 @@ DEFAULT_RULES = (
     ),
     Rule(
         id="before_test", trigger="before_test", scope="since_last_test", format="test_revision",
-        offsets_days=[4, 2, 1], target_minutes=8, items=5,
-        origin=Origin(text="Avant un contrôle, une révision étalée : quatre jours avant, rappel de cours et "
-                           "exercices de base ; deux jours avant, exercices mélangés ; la veille, un petit "
-                           "contrôle d'entraînement."),
+        offsets_days=[3], target_minutes=45,
+        origin=Origin(text="Avant un contrôle, une fiche de préparation complète d'environ 45 minutes, trois "
+                           "jours avant : questions de cours, exercices de base, exercices mélangés et "
+                           "exercices à rédiger comme au contrôle. À faire en une ou plusieurs fois, sur la "
+                           "tablette ou imprimée."),
     ),
     Rule(
         id="missed_concepts", trigger="after_feedback", scope="missed_items", format="test_revision",

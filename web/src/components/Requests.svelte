@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
 
   import { api } from "../lib/api";
-  import { SUBJECTS, subjectName } from "../lib/sheet";
+  import { DURATIONS, SUBJECTS, subjectName } from "../lib/sheet";
   import type { RequestKind, SheetRequest } from "../lib/types";
 
   let { onexit, onopen }: { onexit: () => void; onopen: (id: string) => void } = $props();
@@ -12,7 +12,12 @@
   let subject = $state("MATHS");
   let kind = $state<RequestKind>("revision");
   let focus = $state("");
-  let items = $state<number | null>(null);
+  // Minutes: a revision to prepare a test is long (worked on paper too), an extra exercise short.
+  let minutes = $state<number | null>(30);
+  let touched = false;
+  $effect(() => {
+    if (!touched) minutes = kind === "revision" ? 30 : 10;
+  });
   let sent = $state(false);
   let error = $state("");
 
@@ -31,7 +36,7 @@
     event.preventDefault();
     error = "";
     try {
-      await api.createRequest(subject, kind, focus.trim(), items);
+      await api.createRequest(subject, kind, focus.trim(), minutes);
       sent = true;
       focus = "";
       await load();
@@ -62,18 +67,23 @@
   <input id="focus" type="text" bind:value={focus} maxlength="300"
     placeholder="par exemple : les fractions égales, le chapitre sur les volcans…" />
 
-  <label for="items">Nombre de questions</label>
-  <select id="items" bind:value={items}>
-    <option value={null}>selon le cours</option>
-    {#each [3, 4, 5, 6, 8, 10] as n}<option value={n}>{n}</option>{/each}
+  <label for="minutes">Durée</label>
+  <select id="minutes" bind:value={minutes} onchange={() => (touched = true)}>
+    {#each DURATIONS as [value, name]}<option {value}>{name}</option>{/each}
   </select>
+  {#if minutes && minutes >= 30}
+    <p class="muted hint">
+      Une fiche longue, pour préparer un contrôle : questions de cours, exercices et exercices à rédiger. Elle se
+      télécharge en PDF pour être faite au stylo. Il faut à l'ordinateur environ {Math.round(minutes * 0.9)} minutes
+      pour l'écrire.
+    </p>
+  {/if}
 
   <p><button class="primary">Demander</button></p>
   {#if sent}
     <p class="good" role="status">
       C'est noté. L'ordinateur s'y met dans les 5 minutes s'il est allumé (entre 7 h et 22 h), sinon à la
-      soirée, en relisant tout le cours de la matière. Compte une dizaine de minutes : une notification te
-      préviendra dès qu'elle est prête.
+      soirée, en relisant tout le cours de la matière. Une notification te préviendra dès qu'elle est prête.
     </p>
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
@@ -83,7 +93,11 @@
   <h2>Demandes récentes</h2>
   {#each requests as request (request.id)}
     <div class="card">
-      <div class="muted">{subjectName(request.subject)} · {request.kind === "revision" ? "révision" : "exercice en plus"} · {when(request.created_at)}</div>
+      <div class="muted">
+        {subjectName(request.subject)} · {request.kind === "revision" ? "révision" : "exercice en plus"}{request.minutes
+          ? ` · ${request.minutes} min`
+          : ""} · {when(request.created_at)}
+      </div>
       {#if request.focus}<p style="margin:0.3rem 0">« {request.focus} »</p>{/if}
       {#if request.status === "pending"}
         <p class="muted">En préparation : l'ordinateur s'en occupe dès qu'il est allumé.</p>
@@ -104,5 +118,6 @@
   select, input[type="text"] { width: 100%; }
   fieldset { border: none; padding: 0; margin: 0.8rem 0 0; }
   legend { font-weight: 600; margin-bottom: 0.3rem; }
+  .hint { font-size: 0.88rem; margin: 0.4rem 0 0; }
   .choice { font-weight: 400; display: flex; gap: 0.5rem; align-items: center; min-height: 2.6rem; margin: 0; }
 </style>

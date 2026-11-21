@@ -233,7 +233,12 @@
     {#if reviewIds.length}
       <p><button onclick={() => begin("together", true)}>Voir ensemble les {reviewIds.length} point{reviewIds.length > 1 ? "s" : ""} à revoir</button></p>
     {/if}
-    <p><button class="link" onclick={onprint}>Imprimer pour travailler sur papier</button></p>
+    <p class="paper">
+      {#if sheet.pdf}
+        <a class="button" href={sheet.pdf} target="_blank" rel="noopener">Télécharger en PDF, pour travailler au stylo</a>
+      {/if}
+      <button class="link" onclick={onprint}>{sheet.pdf ? "ou imprimer depuis le navigateur" : "Imprimer pour travailler sur papier"}</button>
+    </p>
   </div>
 {:else if screen === "solo-end"}
   <div class="card">
@@ -382,6 +387,7 @@
 {/if}
 
 <style>
+  .paper { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; }
   .prompt { font-size: 1.2rem; }
   progress { width: 100%; height: 0.6rem; margin: 0.5rem 0; accent-color: var(--accent); }
   .toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }

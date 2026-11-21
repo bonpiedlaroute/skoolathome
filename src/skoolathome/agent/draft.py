@@ -11,7 +11,7 @@ import math
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rapidfuzz import fuzz
 
 from skoolathome.schema.sheet import Check, Example, Item, ParentGuide, Quote, Recap, RuleRef, Sheet
@@ -20,9 +20,15 @@ DraftItemType = Literal["choice", "number", "fraction", "short_answer", "fill_bl
 QuizItemType = Literal["choice", "number", "short_answer", "fill_blank"]  # an oral quiz: short answers
 
 # Minutes a 5e student needs, per question type: the code estimates the duration, not the model.
+# An open question is a written answer: a few sentences, a problem in several steps.
 MINUTES = {"choice": 0.75, "number": 1.5, "fraction": 1.5, "short_answer": 1.0, "fill_blank": 1.5,
-           "matching": 2.0, "open": 3.0}
+           "matching": 2.0, "open": 4.0}
 AVERAGE_MINUTES = 1.25  # to choose how many questions to ask for
+# From 20 minutes, a sheet to prepare a test, often done on paper: more written exercises, so
+# more time per question. 45 minutes are 18 questions.
+LONG_MINUTES = 20
+LONG_AVERAGE_MINUTES = 2.5
+MAX_ITEMS = 24
 RECAP_READING_MINUTES = 3  # reading the « cours en clair » before its questions
 QUIZ_ITEMS = 5
 RECAP_ITEMS = 2
@@ -103,6 +109,8 @@ class AssessmentVerdict(Draft):
 
 
 def item_count(target_minutes: int) -> int:
+    if target_minutes >= LONG_MINUTES:
+        return max(3, min(MAX_ITEMS, round(target_minutes / LONG_AVERAGE_MINUTES)))
     return max(3, min(12, round(target_minutes / AVERAGE_MINUTES)))
 
 
@@ -161,17 +169,50 @@ def to_item(index: int, item: DraftItem, sources: dict[str, str]) -> Item:
     )
 
 
+def to_items(drafted: list[DraftItem], sources: dict[str, str]) -> tuple[list[Item], list[str]]:
+    """The questions that make valid items, and why the others do not: one question badly built
+    no longer throws the whole sheet away (exercises and test revisions, whose length varies)."""
+    items, reasons = [], []
+    for index, item in enumerate(drafted, start=1):
+        try:
+            items.append(to_item(index, item, sources))
+        except ValidationError as error:
+            detail = "; ".join(e["msg"].removeprefix("Value error, ") for e in error.errors()[:2])
+            reasons.append(f"question « {item.prompt[:60]} » écartée, mal construite : {detail}")
+    return items, reasons
+
+
+def numbered(items: list[Item]) -> list[Item]:
+    """q1, q2, … in their order: the questions kept from an earlier attempt, then the new ones."""
+    return [item.model_copy(update={"id": f"q{index}"}) for index, item in enumerate(items, start=1)]
+
+
+def with_items(sheet: Sheet, items: list[Item]) -> Sheet:
+    """The same sheet with fewer questions (those the checks refused are left out)."""
+    cited = {item.quote.source_id for item in items if item.quote}
+    used = [key for key in sheet.sources if key in cited] or sheet.sources
+    return Sheet.model_validate({
+        **sheet.model_dump(), "items": [item.model_dump() for item in items], "sources": used,
+        "source_labels": {key: label for key, label in sheet.source_labels.items() if key in used},
+        "estimated_minutes": estimated_minutes(items, sheet.recap),
+    })
+
+
 def to_sheet(
-    draft: DraftSheet | DraftQuiz | DraftRecap,
+    draft: DraftSheet | DraftQuiz | DraftRecap | None,
     *,
     task: dict,
     sources: dict[str, str],
     labels: dict[str, str],
     trace_id: str,
     student: str = "eleve",
+    items: list[Item] | None = None,
+    title: str = "",
 ) -> Sheet:
-    """Raises pydantic.ValidationError when the draft cannot make a valid Sheet (format guard)."""
-    items = [to_item(index, item, sources) for index, item in enumerate(draft.items, start=1)]
+    """Raises pydantic.ValidationError when the draft cannot make a valid Sheet (format guard).
+    With `items`, those questions (already checked one by one) instead of the draft's."""
+    if items is None:
+        items = [to_item(index, item, sources) for index, item in enumerate(draft.items, start=1)]
     recap = None
     if isinstance(draft, DraftRecap):
         recap = Recap(
@@ -188,7 +229,7 @@ def to_sheet(
         id=task["id"],
         student=student,  # never a name online
         subject=task["subject"],
-        title=draft.title,
+        title=title or draft.title,
         type=task["kind"],
         rule=RuleRef(id=task["rule"], version=task["rule_version"]) if task.get("rule_version") else None,
         sources=used,

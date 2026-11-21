@@ -80,6 +80,7 @@ class Existing:
     visible_from: date | None
     minutes: int
     inputs: str
+    due_by: date | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class RequestRef:
     kind: str  # revision | extra
     focus: str = ""
     items: int | None = None
+    minutes: int | None = None  # how long the parent wants it; None: the format's default
 
 
 @dataclass
@@ -315,7 +317,9 @@ def _before_lesson(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
 
 
 def _before_test(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
-    """A spaced revision: one sheet per offset (four days before, two days before, the day before)."""
+    """One sheet per offset: by default a single complete preparation, three days before (a
+    test known later shows it at once); a parent's rule can space the revision (four days
+    before, two days before, the day before)."""
     today = inputs.run_date
     tasks = []
     for test in unique_tests(inputs.tests):
@@ -327,16 +331,19 @@ def _before_test(inputs: PlanInputs, rule: Rule, out: Plan) -> list[Task]:
             continue
         lessons = _since_last_test(inputs, test)
         focus = _recent_concepts(inputs, test.subject_code)
-        for offset in sorted(set(rule.offsets_days), reverse=True):
+        offsets = sorted(set(rule.offsets_days), reverse=True)
+        for offset in offsets:
             show = test.day - timedelta(days=offset)
             task_id = _task_id(test.day, test.subject_code, f"test-j{offset}")
+            if show < today and offset == offsets[-1] and task_id not in inputs.existing:
+                show = today  # the test was known late: its last stage shows at once
             if show < today:
                 if task_id not in inputs.existing:
                     out.skip(task_id, f"trop tard pour la révision à J-{offset} du contrôle du {fr_day(test.day)}")
                 continue
             if today < show - timedelta(days=GENERATE_AHEAD_DAYS):
                 continue  # a later evening, with the lessons until then
-            stage, text = _stage(offset)
+            stage, text = _stage(offset, single=len(offsets) == 1)
             tasks.append(Task(
                 id=task_id, kind=rule.format, rule_id=rule.id, rule_version=rule.version, priority=rule.priority,
                 subject_code=test.subject_code, subject=test.subject, visible_from=show, due_by=test.day,
@@ -389,10 +396,12 @@ def _requests(inputs: PlanInputs, rules: list[Rule], out: Plan) -> list[Task]:
         task = Task(
             id=f"{today.isoformat()}-{code.lower()}-{request.id}", kind=kind, rule_id="request", rule_version=0,
             priority=PRIORITY_REQUEST, subject_code=code, subject=subject, visible_from=today, due_by=None,
-            target_minutes=DEFAULT_TARGETS[kind], lessons=lessons, stage="request",
+            target_minutes=request.minutes or DEFAULT_TARGETS[kind], lessons=lessons, stage="request",
             stage_text=("une révision demandée par le parent" if request.kind == "revision"
                         else "un exercice en plus, demandé par le parent") + what,
-            items=request.items or questions.get(kind), request_id=request.id, request_focus=request.focus,
+            # A duration chosen: the number of questions follows from it.
+            items=request.items or (None if request.minutes else questions.get(kind)),
+            request_id=request.id, request_focus=request.focus,
             missing=f"Rien en {subject} dans le cahier de texte des 5 dernières semaines : {ASK_FOR_NOTEBOOK}",
             scope_days=sorted({l.day for l in lessons}),
         )
@@ -452,17 +461,33 @@ def _within_load(tasks: list[Task], existing: dict[str, Existing], limit: int | 
     load: dict[date, int] = defaultdict(int)
     for previous in existing.values():
         if previous.status in ("ready", "published") and previous.visible_from and previous.id not in redone:
-            load[previous.visible_from] += previous.minutes
+            for day, minutes in _spread(previous.visible_from, previous.due_by, previous.minutes):
+                load[day] += minutes
     kept = []
     for task in sorted(tasks, key=_importance):
-        used = load[task.visible_from]
-        if used + task.target_minutes > limit:
-            out.skip(task.id, f"charge maximale : {used} min déjà prévues pour le {fr_day(task.visible_from)}, "
-                              f"limite {limit} min")
+        days = _spread(task.visible_from, task.due_by if task.kind == "test_revision" else None, task.target_minutes)
+        if task.kind == "test_revision":
+            # Never too big by itself: known late, it takes the whole evening, the others give way.
+            days = [(day, min(minutes, limit)) for day, minutes in days]
+        full = [(day, load[day]) for day, minutes in days if load[day] + minutes > limit]
+        if full:
+            day, used = full[0]
+            out.skip(task.id, f"charge maximale : {used} min déjà prévues pour le {fr_day(day)}, limite {limit} min")
             continue
-        load[task.visible_from] += task.target_minutes
+        for day, minutes in days:
+            load[day] += minutes
         kept.append(task)
     return kept
+
+
+def _spread(visible_from: date, due_by: date | None, minutes: int) -> list[tuple[date, int]]:
+    """A test preparation counts over the evenings until the test: 45 minutes shown three days
+    before are 15 minutes a day. Any other sheet counts on the day it shows."""
+    days = (due_by - visible_from).days if due_by else 0
+    if days <= 1:
+        return [(visible_from, minutes)]
+    share = -(-minutes // days)  # rounded up
+    return [(visible_from + timedelta(days=n), share) for n in range(days)]
 
 
 # --------------------------------------------------------------------------- helpers
@@ -487,7 +512,15 @@ def _task_id(day: date, code: str, name: str) -> str:
     return f"{day.isoformat()}-{code.lower()}-{name}"
 
 
-def _stage(offset: int) -> tuple[str, str]:
+PREPARATION = ("une préparation complète du contrôle, à faire en une ou plusieurs fois, sur la tablette ou "
+               "imprimée : des questions de cours (définitions, vocabulaire, dates, règles), des exercices de "
+               "base, des exercices mélangés sur tout le programme, et des exercices comme au contrôle, dont "
+               "plusieurs à rédiger (type `open` : expliquer, justifier, résoudre un problème en plusieurs étapes)")
+
+
+def _stage(offset: int, single: bool = False) -> tuple[str, str]:
+    if single:
+        return f"j-{offset}", PREPARATION
     if offset >= 3:
         return f"j-{offset}", "rappel de cours et exercices de base"
     if offset == 2:

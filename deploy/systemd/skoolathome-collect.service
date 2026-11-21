@@ -1,0 +1,18 @@
+# École Directe collection, on its own: one login, the teachers' files downloaded, the home page
+# online with them. It never asks Ollama nor waits for the model: a stuck model never holds it
+# back, and a failure here is told to the parent as an École Directe problem.
+# Edit WorkingDirectory to your clone, like skoolathome-evening.service.
+[Unit]
+Description=skoolathome École Directe collection (then the home page online)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/boulot/dev/skoolathome
+ExecStart=%h/.local/bin/uv run --frozen skoolathome collect --publish
+# One attempt per run (twice a day): never retry a login in a loop.
+Restart=no
+# A minute for the collection, a few for the files (one signature every 10 seconds).
+TimeoutStartSec=30min
+Nice=5

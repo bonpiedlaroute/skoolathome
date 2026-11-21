@@ -187,8 +187,8 @@ def test_duration_within_target_passes():
 
 def test_a_sheet_too_long_fails():
     opens = [item(type="open", prompt=f"Explique {n}.", answer="", variants=[]) for n in range(5)]
-    result = guards.duration(sheet(*opens), target_minutes=8)  # 5 × 3 = 15 min
-    assert not result.ok and "15 min pour 8" in result.reasons[0]
+    result = guards.duration(sheet(*opens), target_minutes=8)  # 5 × 4 = 20 min
+    assert not result.ok and "20 min pour 8" in result.reasons[0]
 
 
 def test_run_all_names_every_guard():

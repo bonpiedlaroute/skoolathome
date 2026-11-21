@@ -10,6 +10,7 @@ import asyncio
 import base64
 import hashlib
 import secrets as random
+import time
 from datetime import timedelta
 
 from nostr_sdk import Event, EventBuilder, Keys, Kind, NostrConnect, NostrConnectUri, PublicKey, Tag
@@ -23,6 +24,31 @@ SECRET_NAME = "bunker"  # ~/.config/skoolathome/bunker.json: {"uri": "bunker://�
 
 class SigningRefused(Exception):
     """The bunker refused, or did not answer in time."""
+
+
+class Pace:
+    """The vault's rate policy (deploy/railway/entrypoint.sh): per session, 5 requests at once then
+    one every 10 seconds; for the whole bunker, 10 at once then one every 5 seconds. Beyond, the
+    answer is « Rejected », and a refused request still costs its token. A signature is one
+    request, opening a session two (connect, get_public_key). Paced here, a little slower than the
+    vault, so that the teachers' files go online one by one instead of being refused in a row."""
+
+    def __init__(self, burst: int = 8, every: float = 5.5, clock=time.monotonic, sleep=time.sleep) -> None:
+        self.burst, self.every, self.clock, self.sleep = burst, every, clock, sleep
+        self.tokens, self.at = float(burst), clock()
+
+    def take(self, cost: int = 1) -> None:
+        now = self.clock()
+        self.tokens = min(self.burst, self.tokens + (now - self.at) / self.every)
+        self.at = now
+        if self.tokens < cost:
+            self.sleep((cost - self.tokens) * self.every)
+            self.tokens, self.at = float(cost), self.clock()
+        self.tokens -= cost
+
+
+PACE = Pace(burst=8, every=5.5)  # the bunker as a whole: shared by every session of this process
+SESSION_BURST, SESSION_EVERY = 4, 10.5
 
 
 def new_token() -> tuple[str, str]:
@@ -64,6 +90,7 @@ class BunkerSession:
         self._connect: NostrConnect | None = None
         self._author: PublicKey | None = None
         self.signatures = 0
+        self._pace = Pace(burst=SESSION_BURST, every=SESSION_EVERY)  # the vault counts per session too
 
     def __enter__(self) -> BunkerSession:
         return self
@@ -89,6 +116,8 @@ class BunkerSession:
 
     def public_key(self) -> PublicKey:
         if self._author is None:
+            PACE.take(2)
+            self._pace.take(2)
             self._connect = self._run(self._open())
             self._author = self._run(self._connect.get_public_key_async())
         return self._author
@@ -96,6 +125,8 @@ class BunkerSession:
     def sign(self, kind: int, content: str, tags: list[list[str]]) -> Event:
         """Ask the bunker to sign. The result is checked here: never trust the signer on its word."""
         author = self.public_key()
+        PACE.take(1)  # before the event is dated: a paced event is as fresh as any
+        self._pace.take(1)
         unsigned = EventBuilder(Kind(kind), content).tags([Tag.parse(t) for t in tags]).finalize_unsigned(author)
         event = self._run(self._connect.sign_event_async(unsigned))
         if event is None:

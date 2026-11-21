@@ -126,6 +126,42 @@ def test_an_empty_previous_lesson_still_gives_a_task_that_will_abstain_with_a_me
 
 
 MATHS_TEST = TestRef(subject_code="MATHS", subject="Mathématiques", day=day(26), reason="flag", text="Contrôle chapitre 4")
+# A parent's spaced revision instead of the default preparation: three short sheets.
+SPACED = Rule(id="before_test", trigger="before_test", scope="since_last_test", format="test_revision",
+              offsets_days=[4, 2, 1], target_minutes=8, items=5, origin=Origin(author="parent"))
+SPACED_RULES = [SPACED if rule.id == "before_test" else rule for rule in DEFAULT_RULES]
+
+
+@pytest.mark.parametrize("evening, shown", [
+    (19, None),        # a week before: too early
+    (21, day(23)),     # three days before: shows Monday 23, made up to two evenings before
+    (23, day(23)),
+    (24, day(24)),     # known only on the 24th: shows at once
+    (25, day(25)),     # even the day before
+    (26, None),        # the day of the test: too late
+])
+def test_one_complete_preparation_before_a_test(evening, shown):
+    lessons = [lesson(n) for n in (5, 9, 12, 16, 17, 19, 23) if n <= evening]
+    result = run(evening, tests=[MATHS_TEST], lessons=lessons, past_tests={"MATHS": [day(6)]})
+    revisions = [t for t in result.tasks if t.rule_id == "before_test"]
+    if shown is None:
+        assert revisions == []
+        return
+    [task] = revisions
+    assert task.id == "2026-11-26-maths-test-j3" and task.visible_from == shown and task.due_by == day(26)
+    assert task.target_minutes == 45 and task.items is None  # 18 questions, from the duration
+    assert "préparation complète" in task.stage_text and "rédiger" in task.stage_text
+
+
+def test_a_preparation_counts_over_the_evenings_until_the_test():
+    # 45 minutes shown Monday 23 for Thursday 26: 15 a day, Monday to Wednesday. Each daily
+    # exercise (8 min) still fits under the 20 minutes.
+    lessons = [lesson(19), lesson(23), lesson(23, "FRANC")]
+    result = run(23, tests=[MATHS_TEST], lessons=lessons)
+    assert "2026-11-26-maths-test-j3" in ids(result)
+    assert "charge maximale" in reasons(result).get("2026-11-23-franc-exercises", "")  # 15 + 8 > 20 on the 24th
+    made = {"prep": Existing("prep", "published", day(23), 45, "x", due_by=day(26))}
+    assert "15 min déjà prévues" in reasons(run(24, lessons=[lesson(24)], existing=made))["2026-11-24-maths-exercises"]
 
 
 @pytest.mark.parametrize("evening, expected, too_late", [
@@ -137,7 +173,7 @@ MATHS_TEST = TestRef(subject_code="MATHS", subject="Mathématiques", day=day(26)
 ])
 def test_spaced_revision_before_a_test(evening, expected, too_late):
     lessons = [lesson(n) for n in (5, 9, 12, 16, 17, 19, 23) if n <= evening]
-    result = run(evening, tests=[MATHS_TEST], lessons=lessons, past_tests={"MATHS": [day(6)]})
+    result = run(evening, SPACED_RULES, tests=[MATHS_TEST], lessons=lessons, past_tests={"MATHS": [day(6)]})
     assert sorted(t.id for t in result.tasks if t.rule_id == "before_test") == expected
     assert sorted(k for k, v in reasons(result).items() if "trop tard" in v) == too_late
     for task in result.tasks:
@@ -149,14 +185,14 @@ def test_spaced_revision_before_a_test(evening, expected, too_late):
 
 
 def test_stages_say_what_kind_of_revision():
-    result = run(23, tests=[MATHS_TEST], lessons=[lesson(23)])
+    result = run(23, SPACED_RULES, tests=[MATHS_TEST], lessons=[lesson(23)])
     stages = {t.stage: t.stage_text for t in result.tasks if t.rule_id == "before_test"}
     assert "contrôle d'entraînement" in stages["j-1"] and "mélangés" in stages["j-2"]
 
 
 def test_the_same_test_found_twice_is_revised_once():
     keywords = TestRef(subject_code="MATHS", subject="Mathématiques", day=day(26), reason="keywords")
-    result = run(22, tests=[keywords, MATHS_TEST], lessons=[lesson(19)])
+    result = run(22, SPACED_RULES, tests=[keywords, MATHS_TEST], lessons=[lesson(19)])
     revisions = [t for t in result.tasks if t.rule_id == "before_test"]
     assert len(revisions) == 2 and all(t.test.reason == "flag" for t in revisions)
 
@@ -168,7 +204,7 @@ def test_over_the_maximum_load_the_least_important_tasks_are_skipped():
     # Shown on Tuesday 17: maths revision (10 min), the quiz for Wednesday's history (5 min), three
     # daily exercises (8 min each).
     test = TestRef(subject_code="MATHS", subject="Mathématiques", day=day(18), reason="flag")
-    result = run(16, rules=[*DEFAULT_RULES, HISTORY_QUIZ], tests=[test], slots=slots("HI-GE", 12, 18),
+    result = run(16, rules=[*SPACED_RULES, HISTORY_QUIZ], tests=[test], slots=slots("HI-GE", 12, 18),
                  lessons=[lesson(12, "HI-GE"), lesson(16, "FRANC"), lesson(16, "AGL1"), lesson(16)])
     kept = {t.id: t.target_minutes for t in result.tasks if t.visible_from == day(17)}
     assert "2026-11-18-maths-test-j1" in kept and "2026-11-18-hi-ge-hist-oral-quiz" in kept
@@ -221,7 +257,7 @@ def test_missed_concepts_come_back_the_next_day():
 
 def test_missed_concepts_go_into_the_test_revision_of_the_same_day():
     test = TestRef(subject_code="MATHS", subject="Mathématiques", day=day(18), reason="flag")
-    result = run(16, tests=[test], lessons=[lesson(12)], missed=[missed(12, "simplifier")])
+    result = run(16, SPACED_RULES, tests=[test], lessons=[lesson(12)], missed=[missed(12, "simplifier")])
     [revision] = [t for t in result.tasks if t.kind == "test_revision" and t.visible_from == day(17)]
     assert revision.id == "2026-11-18-maths-test-j1" and revision.focus == ["simplifier"]
     assert "reprises dans 2026-11-18-maths-test-j1" in reasons(result)["2026-11-17-maths-missed"]
@@ -244,7 +280,8 @@ def test_forced_tasks_try_a_format_on_chosen_lessons():
 def test_a_parent_request_comes_first_reads_the_whole_subject_and_skips_the_load():
     full = {"x": Existing("x", "published", day(17), 20, "x")}  # tomorrow is already full
     request = RequestRef(id="cli-abc123", subject_code="MATHS", kind="revision", focus="les fractions égales")
-    result = run(16, lessons=[lesson(9), lesson(12), lesson(16), lesson(16, "FRANC")], existing=full, requests=[request])
+    result = run(16, SPACED_RULES, lessons=[lesson(9), lesson(12), lesson(16), lesson(16, "FRANC")], existing=full,
+                 requests=[request])
     first = result.tasks[0]
     assert first.id == "2026-11-16-maths-cli-abc123" and first.kind == "test_revision" and first.rule_id == "request"
     assert first.visible_from == day(16) and first.items == 5  # the before_test rule's number
@@ -261,7 +298,7 @@ def test_only_the_requests_when_asked():
 
 
 def test_the_rule_s_number_of_questions_goes_into_its_tasks():
-    result = run(23, tests=[MATHS_TEST], lessons=[lesson(23)])
+    result = run(23, SPACED_RULES, tests=[MATHS_TEST], lessons=[lesson(23)])
     assert {t.items for t in result.tasks if t.rule_id == "before_test"} == {5}
     daily = [t for t in run(16, lessons=[lesson(16)]).tasks]
     assert daily[0].items is None  # from the duration

@@ -69,10 +69,10 @@ def load(conn: psycopg.Connection, student_id: str, run_date: date) -> PlanInput
 
 def pending_requests(conn: psycopg.Connection, student_id: str) -> list[RequestRef]:
     rows = conn.execute(
-        "SELECT id, subject_code, kind, focus, items FROM agent.requests WHERE status = 'pending' "
+        "SELECT id, subject_code, kind, focus, items, minutes FROM agent.requests WHERE status = 'pending' "
         "AND (student_id IS NULL OR student_id = %s) ORDER BY created_at", (student_id,),
     ).fetchall()
-    return [RequestRef(id=r[0], subject_code=r[1], kind=r[2], focus=r[3], items=r[4]) for r in rows]
+    return [RequestRef(id=r[0], subject_code=r[1], kind=r[2], focus=r[3], items=r[4], minutes=r[5]) for r in rows]
 
 
 def upcoming_tests(conn: psycopg.Connection, student_id: str, run_date: date, until: date) -> list[TestRef]:
@@ -113,9 +113,12 @@ def _past_tests(conn: psycopg.Connection, student_id: str, start: date, run_date
 
 def _existing(conn: psycopg.Connection, student_id: str) -> dict[str, Existing]:
     rows = conn.execute(
-        "SELECT id, status, visible_from, minutes, inputs FROM agent.sheets WHERE student_id = %s", (student_id,)
+        "SELECT id, status, visible_from, minutes, inputs, CASE WHEN kind = 'test_revision' THEN due_by END "
+        "FROM agent.sheets WHERE student_id = %s", (student_id,)
     ).fetchall()
-    return {r[0]: Existing(id=r[0], status=r[1], visible_from=r[2], minutes=r[3], inputs=r[4]) for r in rows}
+    # due_by only for a test revision: its minutes count over the evenings until the test.
+    return {r[0]: Existing(id=r[0], status=r[1], visible_from=r[2], minutes=r[3], inputs=r[4], due_by=r[5])
+            for r in rows}
 
 
 def missed(conn: psycopg.Connection, student_id: str, run_date: date, days: int = 14) -> list[Missed]:

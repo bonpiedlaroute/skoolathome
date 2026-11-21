@@ -203,3 +203,32 @@ def test_inconsistent_item_is_refused(change):
 def test_the_bootstrap_code_is_typed_as_one_likes(api_db, monkeypatch):
     monkeypatch.setenv("SKOOLATHOME_BOOTSTRAP_CODE", "QR7N-ZW8C-Q97W-RP3L")
     assert browser().post("/api/pair", json={"code": "qr7n zw8c q97w rp3l"}).json()["role"] == "parent"
+
+
+def test_a_sheet_downloads_as_a_pdf_with_a_link_that_needs_no_session(parent, api_db):
+    publish(api_db)
+    [listed] = parent.get("/api/sheets").json()
+    link = listed["pdf"]
+    assert link == parent.get("/api/sheets/s1").json()["pdf"] and "sig=" in link
+    response = browser().get(link)  # Safari on the iPad: no cookie of the installed app
+    assert response.status_code == 200 and response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF") and "inline" in response.headers["content-disposition"]
+    assert parent.get("/api/pdf/sheets/s1").status_code == 200  # a paired device, without the link
+    forged = link.replace("sig=", "sig=0")
+    assert browser().get(forged).status_code == 403  # never 401: the service worker would forget its data
+    assert browser().get(link.replace("/s1?", "/s2?")).status_code == 403  # a link is for one sheet
+
+
+def test_the_parent_removes_a_sheet_from_every_list_and_can_put_it_back(parent, api_db):
+    publish(api_db)
+    publish(api_db, sheet_id="s2")
+    child = pair_child(parent)
+    assert child.delete("/api/sheets/s1").status_code == 403  # the parent's decision
+    assert parent.delete("/api/sheets/s1").status_code == 204
+    assert [s["id"] for s in child.get("/api/sheets").json()] == ["s2"]
+    assert child.get("/api/sheets/s1").status_code == 200  # still readable from a link (weekly review)
+    publish(api_db)  # the laptop publishing it again does not bring it back
+    assert [s["id"] for s in parent.get("/api/sheets").json()] == ["s2"]
+    assert parent.post("/api/sheets/s1/restore").status_code == 200
+    assert {s["id"] for s in parent.get("/api/sheets").json()} == {"s1", "s2"}
+    assert parent.delete("/api/sheets/unknown").status_code == 404

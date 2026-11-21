@@ -1,0 +1,16 @@
+[Unit]
+Description=skoolathome École Directe collection, twice a day, apart from the model
+
+[Timer]
+# In the morning: the home page shows the day's lessons, and the grades and homework put online
+# the evening before.
+OnCalendar=*-*-* 07:15
+# Before the evening run (20:30): the sheets are made on tonight's data.
+OnCalendar=*-*-* 18:30
+# Laptop off at that time: run once at next start instead (the evening waits for it). Two logins
+# a day at most, never a retry loop.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -6,13 +6,15 @@ What goes online: counts, subjects, dates, abstention reasons. Never a lesson's 
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from skoolathome import sysinfo
-from skoolathome.subjects import weekday
+from skoolathome.subjects import fr_day, weekday
+
+STALE_HOURS = 30  # the collect timer runs every evening: older data is worth a word
 
 
 def _gb(value: float) -> str:
@@ -62,6 +64,14 @@ def build(run_date: date, state: dict) -> dict:
         problems.append("retours de la tablette non récupérés")
     if documents.get("failed"):
         problems.append(f"{_plural(len(documents['failed']), 'document')} non indexé(s)")
+    if collected == "skipped":
+        # Collected apart (its own timer, its own notification): a word only when the data is old,
+        # after the evening's own problems.
+        last = collect.get("last_at")
+        if last is None:
+            problems.append("aucune collecte École Directe encore")
+        elif (datetime.now().astimezone() - datetime.fromisoformat(last)).total_seconds() > STALE_HOURS * 3600:
+            problems.append(f"données École Directe du {fr_day(datetime.fromisoformat(last).date())}")
 
     count = _plural(len(made), "fiche")
     requested = sum(1 for o in made if o["task"].get("request_id"))
@@ -107,7 +117,8 @@ def failure(run_date: date, reason: str) -> dict:
     """The evening could not run at all (Ollama stopped, the graph crashed)."""
     memory, details = _memory_line([])
     return {"run_date": run_date.isoformat(), "status": "ko", "title": "Révisions : soirée KO",
-            "body": f"KO : {reason[:300]}. Pas de nouvelles fiches ce soir. {memory}.",
+            "body": f"KO : {reason[:300]}. Pas de nouvelles fiches ce soir ; la collecte École Directe, "
+                    f"à part, n'est pas concernée. {memory}.",
             "details": {"problems": [reason[:300]], "memory": details}}
 
 

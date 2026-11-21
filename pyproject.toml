@@ -5,6 +5,7 @@ description = "Course-grounded revision sheets prepared by a local model"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.117",
+    "fpdf2>=2.8",
     "httpx>=0.28",
     "nostr-sdk>=0.45.1,<0.46",
     "psycopg[binary,pool]>=3.2",

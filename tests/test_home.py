@@ -241,7 +241,7 @@ def test_the_files_go_online_with_the_page_once(conn, tmp_path):
     attached(conn, tmp_path)
     client = FilesClient(missing=[SHA])
     home.send(conn, client, STUDENT, day(13))
-    assert client.uploaded == [(SHA, "cours.pdf", "application/pdf", PDF)]
+    assert client.uploaded == [(SHA, "cours.pdf", "application/pdf", PDF)]  # a plain name already
     client = FilesClient(missing=[])  # already online: not sent again
     home.send(conn, client, STUDENT, day(13))
     assert client.uploaded == [] and len(client.pages) == 1
@@ -257,3 +257,12 @@ def test_a_file_that_cannot_go_online_stays_on_ecole_directe(conn, tmp_path, mon
     client = FilesClient(missing=[SHA])
     page = home.send(conn, client, STUDENT, day(13))
     assert client.uploaded == [] and not home._files(page)
+
+
+def test_a_file_name_travels_plain_in_the_signed_url():
+    """Vercel re-encodes a query string with accents, spaces or brackets: the signature breaks."""
+    assert home.plain_name("5-cours chap4 Symétries-26.pdf") == "5-cours-chap4-Symetries-26.pdf"
+    assert home.plain_name("MI5-C10-exercices-a-completer (1).pdf") == "MI5-C10-exercices-a-completer-1.pdf"
+    assert home.plain_name("Évolution des ponts.odp") == "Evolution-des-ponts.odp"
+    assert home.plain_name("sans extension") == "sans-extension"
+    assert home.plain_name("éé.png") == "ee.png" and home.plain_name("数学.png") == "document.png"

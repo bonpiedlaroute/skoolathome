@@ -4,7 +4,7 @@
   import { api, ApiError, warmCache } from "../lib/api";
   import { isoDay, nextSchoolDay, suggestionsFor } from "../lib/home";
   import { outbox } from "../lib/outbox.svelte";
-  import { formatLabel } from "../lib/sheet";
+  import { formatLabel, isPast } from "../lib/sheet";
   import type { Device, Explanation, HomeData, SheetSummary } from "../lib/types";
   import GradesBlock from "./GradesBlock.svelte";
   import Notifications from "./Notifications.svelte";
@@ -51,6 +51,22 @@
 
   const day = (iso: string) =>
     new Date(`${iso}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+
+  // Sheets whose date has passed go below, folded: the list keeps what is to do now.
+  const current = $derived((sheets ?? []).filter((s) => !isPast(s, today)));
+  const past = $derived((sheets ?? []).filter((s) => isPast(s, today)));
+  let removeError = $state("");
+
+  async function remove(sheet: SheetSummary) {
+    if (!confirm(`Retirer « ${sheet.title} » de la liste, sur tous les appareils ? Les réponses déjà données sont gardées.`)) return;
+    removeError = "";
+    try {
+      await api.hideSheet(sheet.id);
+      sheets = (sheets ?? []).filter((s) => s.id !== sheet.id);
+    } catch {
+      removeError = "Impossible de retirer la fiche. Vérifie la connexion.";
+    }
+  }
 
   function status(sheet: SheetSummary): string {
     if (sheet.answered === 0) return `${sheet.items} questions · environ ${sheet.estimated_minutes} min`;
@@ -158,25 +174,49 @@
 {:else if sheets.length === 0}
   <div class="card"><p>Aucune fiche pour l'instant. Reviens ce soir !</p></div>
 {:else}
-  {#each sheets as sheet (sheet.id)}
-    <div class="card">
-      <div class="muted">{sheet.subject} · {formatLabel(sheet.type)} · {day(sheet.visible_from)}</div>
-      <h2 style="margin:0.3rem 0">{sheet.title}</h2>
-      <div class="row spread">
-        <span class={sheet.answered >= sheet.items ? "good" : "muted"}>{status(sheet)}</span>
-        <button class="primary" onclick={() => onopen(sheet.id)}>
-          {sheet.answered === 0 ? "Commencer" : sheet.answered < sheet.items ? "Reprendre" : "Ouvrir"}
-        </button>
-      </div>
-      {#if sheet.to_review > 0}
-        <div class="row spread" style="margin-top:0.6rem">
-          <span>{sheet.to_review} point{sheet.to_review > 1 ? "s" : ""} à voir ensemble</span>
-          <button onclick={() => onopen(sheet.id, "review")}>Voir ensemble</button>
-        </div>
-      {/if}
-    </div>
-  {/each}
+  {#if removeError}<p class="error">{removeError}</p>{/if}
+  {#if current.length === 0}
+    <div class="card"><p>Rien à faire pour l'instant. Reviens ce soir !</p></div>
+  {/if}
+  {#each current as sheet (sheet.id)}{@render card(sheet)}{/each}
+  {#if past.length}
+    <details class="past">
+      <summary>Fiches passées ({past.length})</summary>
+      {#each past as sheet (sheet.id)}{@render card(sheet)}{/each}
+    </details>
+  {/if}
 {/if}
+
+{#snippet card(sheet: SheetSummary)}
+  <div class="card">
+    <div class="muted">
+      {sheet.subject} · {formatLabel(sheet.type)} · {day(sheet.visible_from)}{sheet.due_by ? ` · pour le ${day(sheet.due_by)}` : ""}
+    </div>
+    <h2 style="margin:0.3rem 0">{sheet.title}</h2>
+    <div class="row spread">
+      <span class={sheet.answered >= sheet.items ? "good" : "muted"}>{status(sheet)}</span>
+      <button class="primary" onclick={() => onopen(sheet.id)}>
+        {sheet.answered === 0 ? "Commencer" : sheet.answered < sheet.items ? "Reprendre" : "Ouvrir"}
+      </button>
+    </div>
+    {#if sheet.to_review > 0}
+      <div class="row spread" style="margin-top:0.6rem">
+        <span>{sheet.to_review} point{sheet.to_review > 1 ? "s" : ""} à voir ensemble</span>
+        <button onclick={() => onopen(sheet.id, "review")}>Voir ensemble</button>
+      </div>
+    {/if}
+    {#if sheet.pdf || device.role === "parent"}
+      <div class="row actions">
+        {#if sheet.pdf}
+          <a class="link" href={sheet.pdf} target="_blank" rel="noopener">PDF à imprimer</a>
+        {/if}
+        {#if device.role === "parent"}
+          <button class="link remove" onclick={() => remove(sheet)}>Retirer</button>
+        {/if}
+      </div>
+    {/if}
+  </div>
+{/snippet}
 
 <Notifications />
 
@@ -188,4 +228,8 @@
   .source.stale { color: var(--bad); }
   .sheets-title { margin-top: 1.6rem; }
   .fix { font-size: 0.85rem; margin-top: 0.4rem; overflow-wrap: anywhere; }
+  .actions { gap: 1.2rem; margin-top: 0.5rem; font-size: 0.9rem; }
+  .remove { color: var(--muted); }
+  .past { margin-top: 1.2rem; }
+  .past summary { cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
 </style>

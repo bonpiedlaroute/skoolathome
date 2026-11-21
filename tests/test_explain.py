@@ -182,14 +182,15 @@ def test_a_requested_sheet_is_made_at_once_and_given_up_after_three_tries(conn, 
 
     def failing(run_date, student, services, database_url, **options):
         runs.append(options)
-        raise RuntimeError("Ollama ne répond pas")
+        raise ModelError("le modèle s'est mis à répéter le même mot en boucle : Ollama a coupé sa réponse")
 
     monkeypatch.setattr(graph, "run", failing)
     assert cli._make_requested(sessions, []) == 0 and runs == []  # nothing waits: no run
     for _ in range(5):
         assert cli._make_requested(sessions, ["pwa-1"]) == 0
     assert len(runs) == 3 and runs[0] == {"publish": True, "only_requests": True}
-    assert len(notices) == 1 and "Ollama" in notices[0][1] and notices[0][2] == "/#/requests"
+    assert len(notices) == 1 and notices[0][2] == "/#/requests"
+    assert "répéter le même mot" in notices[0][1] and "token" not in notices[0][1]  # read as a login, once
 
     def making(run_date, student, services, database_url, **options):
         runs.append(options)
@@ -199,3 +200,67 @@ def test_a_requested_sheet_is_made_at_once_and_given_up_after_three_tries(conn, 
     monkeypatch.setattr(graph, "run", making)
     assert cli._make_requested(sessions, ["pwa-1", "pwa-2"]) == 1  # pwa-1 waits for the evening
     assert len(notices) == 1
+
+
+def test_an_error_of_the_model_server_is_a_failed_attempt_said_in_french():
+    """Ollama's 500 « token repeat limit reached » (the output looped) stopped a whole run of
+    requested sheets, and its English made the parent think of the École Directe login."""
+    import httpx
+    from openai import InternalServerError
+
+    from skoolathome import cli
+    from skoolathome.agent import llm
+
+    response = httpx.Response(500, request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"))
+    looped = InternalServerError("prediction aborted, token repeat limit reached", response=response, body=None)
+    error = llm.server_error(looped)
+    assert isinstance(error, ModelError) and "répéter le même mot" in str(error) and "token" not in str(error)
+    crashed = llm.server_error(InternalServerError("model runner has unexpectedly stopped", response=response, body=None))
+    assert str(crashed).startswith("le moteur du modèle s'est arrêté net")
+    other = llm.server_error(InternalServerError("model crashed", response=response, body=None))
+    assert str(other).startswith("le serveur du modèle a répondu une erreur 500")
+    assert cli._plain_reason(error) == str(error)
+    assert cli._plain_reason(KeyError("x")).startswith("erreur inattendue (KeyError)")
+
+
+def test_a_run_cut_off_by_the_timer_is_given_up_after_three_tries_and_said(conn, monkeypatch):
+    """The timer's own timeout kills the run before it can count a failure: after three such
+    tries, the next pass gives the request up and tells the parent, once."""
+    from contextlib import contextmanager
+
+    from skoolathome import cli
+
+    url = db.database_url(conn.info.dbname)
+    monkeypatch.setattr(cli, "_connect", lambda: psycopg.connect(url, autocommit=True))
+    notices = []
+
+    class Client:
+        def notify(self, title, body, url="/", tag="agent"):
+            notices.append(body)
+
+    @contextmanager
+    def sessions():
+        yield Client()
+
+    conn.execute("INSERT INTO agent.request_tries (id, tries, last_at) VALUES ('pwa-9', 3, now())")
+    assert cli._make_requested(sessions, ["pwa-9"]) == 0
+    assert len(notices) == 1 and "coupé avant la fin" in notices[0]
+    cli._make_requested(sessions, ["pwa-9"])
+    assert len(notices) == 1  # once
+
+
+def test_the_parent_reads_why_a_requested_sheet_was_not_made_in_plain_words():
+    from skoolathome.agent import making
+
+    malformed = ("Fiche non publiée après 3 essais. Dernier motif : fiche mal formée :  : Value error, a fill_blank "
+                 "item needs one answer per ___ in the prompt")
+    assert making.for_the_parent(malformed) == (
+        "Fiche non faite : en 3 essais, le modèle n'a pas réussi à écrire des questions bien construites")
+    crashed = ("Fiche non publiée après 3 essais. Dernier motif : fiche mal formée : le moteur du modèle s'est "
+               "arrêté net (souvent la carte graphique qui a planté)")
+    assert making.for_the_parent(crashed).startswith("Fiche non faite : le moteur du modèle s'est arrêté net")
+    guards = "Fiche non publiée après 3 essais. Dernier motif : q1 : citation trop courte; q2 : réponse absente"
+    assert making.for_the_parent(guards) == (
+        "Fiche non faite : en 3 essais, aucune version n'a passé les contrôles (le dernier : q1 : citation trop courte)")
+    short = "Trop peu de texte pour une fiche (32 caractères) : demande-lui son cahier"
+    assert making.for_the_parent(short) == short

@@ -25,6 +25,23 @@ export function quoteSource(sheet: Pick<Sheet, "source_labels">, item: Pick<Item
   return (item.quote && sheet.source_labels?.[item.quote.source_id]) || "ton cours";
 }
 
+/** How long a requested sheet lasts. From 30 minutes: a test preparation, in parts, for paper too. */
+export const DURATIONS: [number, string][] = [
+  [10, "10 minutes"],
+  [20, "20 minutes"],
+  [30, "30 minutes"],
+  [45, "45 minutes"],
+  [60, "1 heure"],
+];
+
+/** A sheet whose time has passed: its date is gone, or a week old without one. Shown apart. */
+export function isPast(sheet: { visible_from: string; due_by: string | null }, today: string): boolean {
+  if (sheet.due_by) return sheet.due_by < today;
+  const shown = new Date(`${sheet.visible_from}T12:00:00`);
+  shown.setDate(shown.getDate() + 7);
+  return shown.toISOString().slice(0, 10) < today;
+}
+
 /** Subjects a parent can ask a sheet for: École Directe code, name. */
 export const SUBJECTS: [string, string][] = [
   ["MATHS", "Mathématiques"],

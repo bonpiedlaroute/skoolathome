@@ -68,8 +68,10 @@ export const api = {
   pushSubscribe: (subscription: PushSubscriptionJSON) => call<{ ok: boolean }>("POST", "/push/subscription", subscription),
   pushTest: () => call<{ sent: number; failed: number }>("POST", "/push/test"),
   requests: () => call<SheetRequest[]>("GET", "/requests"),
-  createRequest: (subject: string, kind: RequestKind, focus: string, items: number | null) =>
-    call<SheetRequest>("POST", "/requests", { subject, kind, focus, items }),
+  createRequest: (subject: string, kind: RequestKind, focus: string, minutes: number | null) =>
+    call<SheetRequest>("POST", "/requests", { subject, kind, focus, minutes }),
+  hideSheet: (id: string) => call<void>("DELETE", sheetPath(id)),
+  restoreSheet: (id: string) => call<{ ok: boolean }>("POST", `${sheetPath(id)}/restore`),
   instructions: () => call<Instruction[]>("GET", "/instructions"),
   createInstruction: (fields: { text: string } | { rule: RuleBody }) => call<Instruction>("POST", "/instructions", fields),
   replyInstruction: (id: string, kind: InstructionReplyKind, fields: { text?: string; rule?: RuleBody } = {}) =>

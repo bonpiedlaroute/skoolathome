@@ -70,7 +70,8 @@ self.addEventListener("fetch", (event) => {
   } else if (
     url.pathname.startsWith("/api/cron/") ||
     url.pathname.startsWith("/api/push/") ||
-    url.pathname.startsWith("/api/documents/") // teachers' files: the browser's own cache, by their signed link
+    url.pathname.startsWith("/api/documents/") || // teachers' files: the browser's own cache, by their signed link
+    url.pathname.startsWith("/api/pdf/") // sheets as PDF: made on demand, same
   ) {
     return; // never cached
   } else if (url.pathname.startsWith("/api/")) {

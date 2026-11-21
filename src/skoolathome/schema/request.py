@@ -24,6 +24,8 @@ class NewRequest(Strict):
     kind: RequestKind = "extra"
     focus: str = Field(default="", max_length=300)    # what to work on, in the parent's words
     items: int | None = Field(default=None, ge=1, le=15)
+    # How long the sheet should last: from 20 minutes, a long sheet for paper too (a test to prepare).
+    minutes: int | None = Field(default=None, ge=5, le=60)
 
 
 class RequestUpdate(Strict):

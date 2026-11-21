@@ -17,6 +17,19 @@ class ModelError(Exception):
     """The model did not answer, or not in the imposed format."""
 
 
+def server_error(error) -> ModelError:
+    """An error answered by the model's server (Ollama's 500…): a failed attempt, like a timeout,
+    never the end of the evening. Said in French: « token » here is a word of the model's output,
+    nothing to do with a login."""
+    message = str(getattr(error, "message", "") or error)
+    if "repeat limit" in message:
+        return ModelError("le modèle s'est mis à répéter le même mot en boucle : Ollama a coupé sa réponse")
+    if "runner has unexpectedly stopped" in message or "DeviceLost" in message:
+        return ModelError("le moteur du modèle s'est arrêté net (souvent la carte graphique qui a planté)")
+    status = getattr(error, "status_code", "")
+    return ModelError(f"le serveur du modèle a répondu une erreur {status} : {message[:200]}")
+
+
 def chat_model(role: str, conf: config.Config | None = None) -> ChatOpenAI:
     conf = conf or config.load()
     model = conf.model(role)
@@ -42,18 +55,20 @@ class Models:
         self.conf = conf or config.load()
 
     def text(self, role: str, messages: list[dict], callbacks: list) -> str:
-        from openai import APIConnectionError
+        from openai import APIConnectionError, APIStatusError
 
         try:
             reply = chat_model(role, self.conf).invoke(messages, config={"callbacks": callbacks})
         except APIConnectionError as error:  # includes the timeout
             raise ModelError(f"pas de réponse du modèle : {error}") from error
+        except APIStatusError as error:
+            raise server_error(error) from error
         return str(reply.content).strip()
 
     def structured(self, role: str, messages: list[dict], schema: type[Schema], callbacks: list) -> Schema:
         """The JSON schema of `schema` goes to Ollama as its `format`: the output can only be valid JSON
         of that shape. Pydantic then checks the rest."""
-        from openai import APIConnectionError, LengthFinishReasonError
+        from openai import APIConnectionError, APIStatusError, LengthFinishReasonError
 
         model = chat_model(role, self.conf).with_structured_output(schema, method="json_schema", include_raw=True)
         try:
@@ -62,6 +77,8 @@ class Models:
             raise ModelError("sortie coupée : trop longue pour max_tokens") from error
         except APIConnectionError as error:  # includes the timeout: the graph regenerates, then abstains
             raise ModelError(f"pas de réponse du modèle : {error}") from error
+        except APIStatusError as error:  # e.g. Ollama's 500 when the output loops: the same
+            raise server_error(error) from error
         if result.get("parsed") is None:
             raw = result.get("raw")
             content = raw.content if isinstance(raw, AIMessage) else raw

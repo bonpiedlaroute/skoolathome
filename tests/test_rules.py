@@ -48,9 +48,9 @@ def test_untouched_default_rules_follow_the_code_and_the_parent_s_are_kept(conn)
     old = Rule(id="before_test", trigger="before_test", offsets_days=[4, 2, 1], target_minutes=10, format="test_revision")
     conn.execute("INSERT INTO agent.rules (id, version, status, body) VALUES ('before_test', 1, 'active', %s)",
                  (Jsonb(old.model_dump(mode="json")),))
-    assert "before_test" in store.ensure_defaults(conn)  # five questions now, as in the code
+    assert "before_test" in store.ensure_defaults(conn)  # one 45-minute preparation now, as in the code
     revision = store.get(conn, "before_test")
-    assert (revision.version, revision.items) == (2, 5)
+    assert (revision.version, revision.offsets_days, revision.target_minutes) == (2, [3], 45)
     mine = store.set_fields(conn, "before_test", {"items": 4})
     assert (mine.version, mine.items, mine.origin.author) == (3, 4, "parent") and mine.origin.text == revision.origin.text
     assert store.ensure_defaults(conn) == [] and store.get(conn, "before_test").items == 4

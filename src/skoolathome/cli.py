@@ -41,23 +41,35 @@ def cmd_db_migrate(args: argparse.Namespace) -> int:
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
-    from skoolathome import secrets
+    """One École Directe collection (one login), apart from the model: it never asks Ollama nor
+    waits for it. With --publish (the collect timer): the home page goes online with the new
+    teachers' files, and a failure reaches the parent as an École Directe problem, apart from the
+    evening's sheets."""
+    from skoolathome import locks, secrets
     from skoolathome.collect import collect
     from skoolathome.collectors.ecoledirecte.client import Device, EcoleDirecteClient
     from skoolathome.collectors.ecoledirecte.source import ReplayClient
 
+    today = _today(args)
     if args.replay:
         client, pause = ReplayClient(Path(args.replay)), 0.0
     else:
         conf = secrets.read("ecoledirecte")
         if conf is None:
-            sys.exit("Identifiants École Directe absents : lance d'abord skoolathome-ed-probe --interactive.")
+            reason = "identifiants École Directe absents : lance skoolathome-ed-probe --interactive"
+            if args.publish:
+                _collection_failed(reason)
+            sys.exit(reason[:1].upper() + reason[1:] + ".")
         device = Device(conf["cn"], conf["cv"]) if conf.get("cn") and conf.get("cv") else None
         client, pause = EcoleDirecteClient(conf["username"], conf["password"], device), 1.0
     try:
-        with _connect() as conn:
-            result = collect(conn, client, student_id=args.student, today=_today(args), pause=pause,
+        with locks.collection(), _connect() as conn:
+            result = collect(conn, client, student_id=args.student, today=today, pause=pause,
                              download=not args.no_download)
+    except Exception as error:
+        if args.publish:
+            _collection_failed(f"collecte interrompue ({type(error).__name__} : {str(error)[:150]})")
+        raise
     finally:
         client.close()
     print(f"Collecte n° {result.run_id} : {result.status}")
@@ -70,7 +82,57 @@ def cmd_collect(args: argparse.Namespace) -> int:
         print(f"  erreur {error['kind']} {error['ref']} : {error['error']}")
     if result.status == "two_factor_required":
         print("École Directe demande la double authentification : lance skoolathome-ed-probe --interactive, une seule fois.")
-    return 0 if result.status in ("ok", "partial") else 1
+    collected = result.status in ("ok", "partial")
+    if args.publish:
+        if collected:
+            _send_home_now(result.student_id, today)
+            args.save, args.notify = True, False
+            try:
+                cmd_summary(args)  # the T06 summary, kept in data/summaries/
+            except SystemExit as stop:
+                print(stop)
+        else:
+            _collection_failed(_collection_reason(result.status, result.errors))
+    return 0 if collected else 1
+
+
+def _collection_reason(status: str, errors: list[dict]) -> str:
+    if status == "two_factor_required":
+        return "École Directe demande la double authentification : lance skoolathome-ed-probe --interactive"
+    first = (errors or [{}])[0].get("error", "")
+    return f"collecte en échec ({first[:150]})" if first else "collecte en échec"
+
+
+def _collection_failed(reason: str) -> None:
+    """Told to the parent as what it is: École Directe, not the sheets. The evening still makes
+    the sheets on the data already collected."""
+    title = "École Directe : collecte en échec"
+    body = f"{reason[:1].upper()}{reason[1:200]}. Les fiches du soir se font quand même, sur les données déjà relevées."
+    print(f"{title} : {reason}")
+    sessions = _api_sessions()
+    if sessions is not None:
+        try:
+            with sessions() as client:
+                client.notify(title, body, url="/", tag="collect")
+        except Exception as error:  # noqa: BLE001
+            print(f"Prévenir le parent : impossible ({str(error)[:150]}).")
+    _notify(title, body)
+
+
+def _send_home_now(student_id: str | None, today: date) -> None:
+    """The home page right after the collection, with its new files: no model needed. Not sent:
+    the next `skoolathome explain` pass tries again."""
+    from skoolathome import home
+
+    sessions = _api_sessions()
+    if sessions is None or student_id is None:
+        return
+    try:
+        with _connect() as conn, sessions() as client:
+            home.send(conn, client, student_id, today)
+        print("Page d'accueil mise en ligne.")
+    except Exception as error:  # noqa: BLE001
+        print(f"Page d'accueil non envoyée : {str(error)[:300]} (nouvel essai au prochain passage du minuteur).")
 
 
 ATTACHMENT_STATES = {"downloaded": "téléchargées", "pending": "à télécharger", "unsupported": "fichier inattendu",
@@ -114,14 +176,25 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 
 def cmd_evening(args: argparse.Namespace) -> int:
-    """What the timer runs (T17): the whole evening graph. Collection (one login, never a retry),
-    feedback, plan, sheets, judge, signed publication, then the report to the parent."""
+    """What the evening timer runs (T17): the work of the model on the data already collected.
+    Feedback, plan, sheets, judge, signed publication, then the report to the parent. The
+    École Directe collection has its own timer (`collect --publish`): an Ollama that does not
+    answer never holds it back, and an École Directe failure never stops the sheets. With
+    --collect, one collection first, by hand, before Ollama is even asked."""
     from skoolathome import locks, summary
     from skoolathome.agent import graph, llm
     from skoolathome.collectors.manual.source import ManualSource
     from skoolathome.store import db
 
     today, publish = _today(args), not args.no_publish
+    if args.collect and not args.only_requests:
+        args.replay, args.no_download, args.publish = None, False, False
+        try:
+            cmd_collect(args)
+        except (SystemExit, Exception) as stop:  # noqa: BLE001  (the sheets are made on what is known)
+            print(f"Collecte : {stop}")
+    with locks.collection(wait=True):
+        pass  # a collection in progress (its own timer) finishes first: the evening works on its data
     problem = _preflight()
     if problem:
         print(problem)
@@ -135,7 +208,7 @@ def cmd_evening(args: argparse.Namespace) -> int:
             print(f"Journal des changements : {part} noté.")
     services = graph.Services(
         models=llm.Models(),
-        collector=None if args.no_collect or args.only_requests else _collector(args),
+        collector=None,  # collected apart: `collect --publish`, or --collect above
         api=_api_sessions(),
         embedder=_embedder(),
         material=ManualSource(),
@@ -155,12 +228,6 @@ def cmd_evening(args: argparse.Namespace) -> int:
         raise
     print()
     _print_evening(evening)
-    if not args.no_collect and not args.only_requests:
-        args.save, args.notify = True, False
-        try:
-            cmd_summary(args)  # the T06 summary, kept in data/summaries/
-        except SystemExit as stop:
-            print(stop)
     _notify(evening.report.get("title", "skoolathome"), evening.report.get("body", ""))
     return 0 if evening.report.get("status") == "ok" else 1
 
@@ -214,29 +281,6 @@ def _embedder():
         print(f"Modèle d'embedding absent (ollama pull {conf.model('embedder').model}) : documents ignorés ce soir.")
         return None
     return LocalEmbedder(conf)
-
-
-def _collector(args: argparse.Namespace):
-    """One École Directe collection, as the graph's `collect` node runs it."""
-    def collect_once() -> dict:
-        from skoolathome import secrets
-        from skoolathome.collect import collect
-        from skoolathome.collectors.ecoledirecte.client import Device, EcoleDirecteClient
-
-        conf = secrets.read("ecoledirecte")
-        if conf is None:
-            return {"status": "failed", "errors": [{"kind": "run", "ref": "", "error": "identifiants École Directe absents"}]}
-        device = Device(conf["cn"], conf["cv"]) if conf.get("cn") and conf.get("cv") else None
-        client = EcoleDirecteClient(conf["username"], conf["password"], device)
-        try:
-            with _connect() as conn:
-                result = collect(conn, client, student_id=args.student, today=_today(args), pause=1.0)
-        finally:
-            client.close()
-        return {"status": result.status, "run_id": result.run_id, "student_id": result.student_id,
-                "counts": result.counts, "errors": result.errors[:10]}
-
-    return collect_once
 
 
 def _api_sessions():
@@ -420,7 +464,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         sys.exit(f"Matière inconnue : {args.subject}. Par exemple : maths, francais, histoire, anglais, svt, physique.")
     focus = " ".join(args.focus).strip()
     try:
-        wanted = NewRequest(subject=code, kind="revision" if args.revision else "extra", focus=focus, items=args.items)
+        wanted = NewRequest(subject=code, kind="revision" if args.revision else "extra", focus=focus, items=args.items,
+                            minutes=args.minutes)
     except ValidationError as error:
         sys.exit(f"Demande invalide :\n{error}")
     with _connect() as conn:
@@ -430,7 +475,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not args.now:
         print("Elle sera faite au prochain passage : la soirée, ou skoolathome evening --only-requests.")
         return 0
-    args.only_requests, args.no_collect, args.lesson, args.format, args.restart = True, True, None, "exercises", False
+    args.only_requests, args.collect, args.lesson, args.format, args.restart = True, False, None, "exercises", False
     args.student, args.today = None, None
     return cmd_evening(args)
 
@@ -1103,6 +1148,22 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plain_reason(failure: Exception) -> str:
+    """Why a run stopped, for the parent: in French, without the jargon of the libraries."""
+    import httpx
+
+    from skoolathome.agent.llm import ModelError
+    from skoolathome.publish.client import ApiError
+
+    if isinstance(failure, ModelError):
+        return str(failure)
+    if isinstance(failure, ApiError):
+        return f"l'appli en ligne a refusé ({failure.status})"
+    if isinstance(failure, (httpx.ConnectError, ConnectionError, OSError)):
+        return "le modèle ou le réseau ne répond pas"
+    return f"erreur inattendue ({type(failure).__name__}), détails dans journalctl --user -u skoolathome-explain"
+
+
 def _make_requested(sessions, waiting: list[str]) -> int:
     """The sheets the parent asked for from the PWA, made now instead of at the evening: the same
     run as `evening --only-requests` (no collection, no call to École Directe). The API tells the
@@ -1115,11 +1176,15 @@ def _make_requested(sessions, waiting: list[str]) -> int:
     from skoolathome.store import requests as requests_store
 
     with _connect() as conn:
+        cut_off = requests_store.exhausted(conn, requests_store.still_pending(conn, waiting))
         ids = requests_store.to_try(conn, waiting)
-        if not ids:
-            return 0
-        requests_store.tried(conn, ids)
+        if ids:
+            requests_store.tried(conn, ids)
         student = summary.latest_student(conn)
+    if cut_off:
+        _tell_given_up(sessions, "le traitement a été coupé avant la fin, trop long pour le minuteur")
+    if not ids:
+        return 0
     say = lambda message: print(f"{datetime.now():%H:%M}  {message}", flush=True)  # noqa: E731
     say(f"Fiche(s) demandée(s) depuis l'appli : {len(ids)}, faite(s) maintenant.")
     services = graph.Services(models=llm.Models(), collector=None, api=sessions, embedder=_embedder(),
@@ -1128,20 +1193,24 @@ def _make_requested(sessions, waiting: list[str]) -> int:
     try:
         graph.run(date.today(), student, services, db.database_url(), publish=True, only_requests=True)
     except Exception as failure:  # noqa: BLE001  (tried again at the next pass)
-        error = f"{type(failure).__name__} : {str(failure)[:200]}"
-        say(f"Fiches demandées : traitement interrompu ({error}).")
+        error = _plain_reason(failure)
+        say(f"Fiches demandées : traitement interrompu ({type(failure).__name__} : {str(failure)[:200]}).")
     with _connect() as conn:
         left = requests_store.still_pending(conn, ids)
         given_up = requests_store.failed(conn, left, error or "toujours en attente après le traitement")
     if given_up:
-        try:
-            with sessions() as client:
-                client.notify("Fiche demandée pas encore prête",
-                              f"L'ordinateur n'a pas réussi à la faire ({(error or 'raison inconnue')[:120]}). "
-                              "Elle sera refaite à la prochaine soirée.", url="/#/requests", tag="request-retry")
-        except Exception as failure:  # noqa: BLE001
-            say(f"Prévenir le parent : impossible ({str(failure)[:150]}).")
+        _tell_given_up(sessions, error or "raison inconnue")
     return len(ids) - len(left)
+
+
+def _tell_given_up(sessions, reason: str) -> None:
+    try:
+        with sessions() as client:
+            client.notify("Fiche demandée pas encore prête",
+                          f"L'ordinateur n'a pas réussi à la faire : {reason[:160]}. "
+                          "Elle sera refaite à la prochaine soirée.", url="/#/requests", tag="request-retry")
+    except Exception as failure:  # noqa: BLE001
+        print(f"{datetime.now():%H:%M}  Prévenir le parent : impossible ({str(failure)[:150]}).", flush=True)
 
 
 EXPLAIN_HOURS = (7, 22)  # when the timer asks the queue; --now for any hour
@@ -1760,6 +1829,8 @@ def main() -> None:
     collect.add_argument("--today", help="pretend today is this date (YYYY-MM-DD), for replays and tests")
     collect.add_argument("--no-download", action="store_true",
                          help="list the attached files, download none (until `ed download` was checked by hand)")
+    collect.add_argument("--publish", action="store_true",
+                         help="what the collect timer runs: then the home page online, and a failure told to the parent")
     collect.set_defaults(run=cmd_collect)
 
     summary = commands.add_parser("summary", help="upcoming tests and lessons without content")
@@ -1769,10 +1840,12 @@ def main() -> None:
     summary.add_argument("--notify", action="store_true", help="desktop notification")
     summary.set_defaults(run=cmd_summary)
 
-    evening = commands.add_parser("evening", help="what the timer runs: collect, summary, then the sheets")
+    evening = commands.add_parser("evening", help="what the evening timer runs: the sheets, on the data collected")
     evening.add_argument("--student", type=int)
     evening.add_argument("--today")
-    evening.add_argument("--no-collect", action="store_true", help="work on what is already in the database")
+    evening.add_argument("--collect", action="store_true",
+                         help="one École Directe collection first, by hand (the collect timer does it otherwise)")
+    evening.add_argument("--no-collect", action="store_true", help=argparse.SUPPRESS)  # the default now
     evening.add_argument("--no-publish", action="store_true", help="keep the sheets on this laptop")
     evening.add_argument("--lesson", action="append",
                          help="a lesson id (school.lessons.source_id) to work on, outside the rules")
@@ -2030,7 +2103,8 @@ def main() -> None:
     ask.add_argument("focus", nargs="*", help="what to work on, in your words (optional)")
     ask.add_argument("--revision", action="store_true", help="a revision sheet (default: an extra exercise)")
     ask.add_argument("--items", type=int, help="number of questions")
-    ask.add_argument("--now", action="store_true", help="make it now (about 10 minutes), then publish it")
+    ask.add_argument("--minutes", type=int, help="how long it lasts, 5 to 60 (from 20: a long sheet, in parts)")
+    ask.add_argument("--now", action="store_true", help="make it now (about 10 minutes; an hour for 45), then publish it")
     ask.add_argument("--no-publish", action="store_true", help="with --now: keep it on this laptop")
     ask.set_defaults(run=cmd_ask)
     commands.add_parser("requests", help="the sheets asked for, and what became of them").set_defaults(run=cmd_requests)
