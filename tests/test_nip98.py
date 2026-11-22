@@ -476,7 +476,7 @@ def test_the_laptop_notifies_the_parents(agent, monkeypatch):
 
 
 def test_the_queue_says_what_waits_for_the_laptop(agent, parent):
-    assert agent.queue() == {"explanations": [], "requests": []}
+    assert agent.queue() == {"explanations": [], "requests": [], "photos": []}
     made = parent.post("/api/requests", json={"subject": "MATHS", "kind": "extra", "focus": "symétrie"}).json()
     assert agent.queue()["requests"] == [made["id"]]
 
@@ -486,7 +486,66 @@ def test_an_api_without_the_queue_still_gives_the_explanations(agent, monkeypatc
         raise ApiError(404, "Not Found")
 
     monkeypatch.setattr(agent, "_call", lambda method, path, *a, **k: gone() if path == "/api/agent/queue" else [])
-    assert agent.queue() == {"explanations": [], "requests": []}
+    assert agent.queue() == {"explanations": [], "requests": [], "photos": []}
+
+
+# ------------------------------------------------------- photos of the notebook
+
+JPEG = b"\xff\xd8\xff\xe0" + b"photo" * 20
+
+
+def test_a_request_with_photos_is_read_checked_then_written(agent, parent, api_db, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(app_module.push, "send", lambda conn, payload, **kw: pushed.append(payload) or {"sent": 1})
+    made = parent.post("/api/requests", json={"subject": "MATHS", "kind": "revision", "focus": "chapitre 4",
+                                              "minutes": 45, "photos": 2}).json()
+    request_id = made["id"]
+    assert (made["status"], made["photos"]) == ("photos", 2)
+    put = lambda n, body=JPEG, kind="image/jpeg": parent.put(
+        f"/api/requests/{request_id}/photos/{n}", content=body, headers={"Content-Type": kind})
+    assert put(1, kind="image/heic").status_code == 415
+    assert put(1, body=b"GIF89a").status_code == 422
+    assert put(3).status_code == 422  # two photos announced
+    assert pair_child(parent).put(f"/api/requests/{request_id}/photos/1", content=JPEG,
+                                  headers={"Content-Type": "image/jpeg"}).status_code == 403
+    assert put(1).json()["status"] == "photos"
+    # Not handed to the laptop before the parent has checked the text.
+    assert agent.queue()["requests"] == [] and agent.feedback(0)["requests"] == []
+    assert put(2).json()["status"] == "reading"
+    assert agent.queue()["photos"] == [{"id": request_id, "photos": 2}]
+    assert agent.request_photo(request_id, 2) == JPEG
+
+    from skoolathome.schema.request import PhotoPage, Transcription
+
+    agent.request_pages(request_id, Transcription(pages=[PhotoPage(text="Deux figures sont symétriques…"),
+                                                          PhotoPage(problem="pas de cours lisible sur cette photo")]))
+    assert api_db.execute("SELECT count(*) FROM request_photos").fetchone()[0] == 0  # deleted once read
+    assert pushed[-1]["title"] == "Révisions : photos lues, à relire" and "1 photo(s) mal lue(s)" in pushed[-1]["body"]
+    [listed] = parent.get("/api/requests").json()
+    assert listed["status"] == "to_review" and listed["pages"][1]["problem"].startswith("pas de cours")
+    assert agent.queue()["photos"] == [] and agent.feedback(0)["requests"] == []
+
+    review = lambda pages: parent.post(f"/api/requests/{request_id}/pages", json={"pages": pages})
+    assert review(["un seul"]).status_code == 422  # two pages
+    assert review(["", " "]).status_code == 422
+    assert review(["Deux figures sont symétriques par rapport à un point…", ""]).json()["status"] == "pending"
+    assert agent.queue()["requests"] == [request_id]
+    [picked] = agent.feedback(0)["requests"]
+    assert picked["id"] == request_id and picked["pages"] == ["Deux figures sont symétriques par rapport à un point…"]
+    assert parent.post(f"/api/requests/{request_id}/cancel").status_code == 409  # already being written
+
+
+def test_a_request_with_photos_can_be_cancelled(agent, parent, api_db):
+    request_id = parent.post("/api/requests", json={"subject": "AGL1", "photos": 1}).json()["id"]
+    parent.put(f"/api/requests/{request_id}/photos/1", content=JPEG, headers={"Content-Type": "image/jpeg"})
+    cancelled = parent.post(f"/api/requests/{request_id}/cancel").json()
+    assert (cancelled["status"], cancelled["reason"]) == ("abstained", "Annulée.")
+    assert api_db.execute("SELECT count(*) FROM request_photos").fetchone()[0] == 0
+    with pytest.raises(ApiError) as late:
+        from skoolathome.schema.request import PhotoPage, Transcription
+
+        agent.request_pages(request_id, Transcription(pages=[PhotoPage(text="x")]))
+    assert late.value.status == 409
 
 
 def home_with_file(sha: str, name: str = "cours.pdf"):

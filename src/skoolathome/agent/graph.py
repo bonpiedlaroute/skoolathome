@@ -857,10 +857,26 @@ def relevance(focus: str, text: str) -> float:
     return max(fuzz.partial_ratio(wanted, flat_text), fuzz.token_set_ratio(wanted, flat_text))
 
 
+def _photo_pages(conn: psycopg.Connection, task: dict) -> list[str]:
+    """The text of the photos of the notebook sent with the request, as the parent checked it."""
+    if not task.get("request_id"):
+        return []
+    row = conn.execute("SELECT pages FROM agent.requests WHERE id = %s", (task["request_id"],)).fetchone()
+    return [page for page in (row[0] if row else []) if page.strip()]
+
+
 def _sources(conn: psycopg.Connection, student_id: str, task: dict) -> tuple[dict[str, str], dict[str, str]]:
-    """The lessons first within the budget, then the pages found. Most recent lessons first; for a
-    request, the ones closest to what the parent asked for. Each text is given as it is: the quotes
-    must be copied from what the teacher or the book wrote."""
+    """The photos of the notebook sent with a request first, then the lessons within the budget,
+    then the pages found. Most recent lessons first; for a request, the ones closest to what the
+    parent asked for. Each text is given as it is: the quotes must be copied from what the
+    teacher or the book wrote, or from the notebook."""
+    photos: dict[str, str] = {}
+    budget = MAX_SOURCE_CHARS
+    for position, page in enumerate(_photo_pages(conn, task), start=1):
+        if budget < 300:
+            break
+        photos[f"photo:{task['request_id']}:{position}"] = page[:budget]
+        budget -= len(photos[f"photo:{task['request_id']}:{position}"])
     found = []
     for ref in task["lessons"]:
         lesson = lessons.get(conn, student_id, ref["source"], ref["source_id"])
@@ -869,14 +885,17 @@ def _sources(conn: psycopg.Connection, student_id: str, task: dict) -> tuple[dic
     focus = task.get("request_focus") or ""
     order = (sorted(found, key=lambda l: (relevance(focus, l.content), l.day), reverse=True) if focus
              else sorted(found, key=lambda l: l.day, reverse=True))
-    budget, kept = MAX_SOURCE_CHARS, {}
+    kept = {}
     for lesson in order:
         if budget < 200:
             break
         kept[lesson.key] = lesson.content[:budget]
         budget -= len(kept[lesson.key])
-    sources = {lesson.key: kept[lesson.key] for lesson in sorted(found, key=lambda l: l.day) if lesson.key in kept}
-    labels = {lesson.key: f"ton cours du {fr_day(lesson.day)}" for lesson in found if lesson.key in kept}
+    sources = photos | {lesson.key: kept[lesson.key] for lesson in sorted(found, key=lambda l: l.day)
+                        if lesson.key in kept}
+    labels = {key: f"ta photo du cahier{f' n° {n}' if len(photos) > 1 else ''}"
+              for n, key in enumerate(photos, start=1)}
+    labels |= {lesson.key: f"ton cours du {fr_day(lesson.day)}" for lesson in found if lesson.key in kept}
     # The teacher's own document, attached to the lesson in École Directe (T25), before any search.
     for key, label_, _, page_text in lesson_pages(conn, student_id, task["lessons"]):
         if budget < 300:
@@ -942,6 +961,11 @@ def _context(task: dict, sources: dict[str, str], overview: str = "", labels: di
     if task.get("style") == "oral_quiz":
         lines.append("Style : comme une interrogation orale en début de cours, questions directes, "
                      "réponses de quelques mots.")
+    notebook = [key for key in sources if key.startswith("photo:")]
+    if notebook:
+        lines.append("Le parent a envoyé des photos du cahier (sources " + ", ".join(f"[{k}]" for k in notebook)
+                     + ") : c'est le cours tel que l'élève l'a écrit en classe, la source principale. Pose "
+                     "d'abord tes questions sur ces photos, et cite-les mot pour mot.")
     attached = [key for key, name in (labels or {}).items() if name.startswith("le document du prof")]
     if attached:
         lines.append("Le prof a joint son document à la séance (sources " + ", ".join(f"[{k}]" for k in attached[:4])

@@ -31,7 +31,8 @@ MAX_FOCUS = 5
 DEFAULT_TARGETS = {"exercises": 8, "quick_quiz": 5, "lesson_recap": 6, "test_revision": 8}
 _TEST_REASONS = ("flag", "keywords", "model")  # from the most reliable to the least
 
-ASK_FOR_NOTEBOOK = "demande-lui son cahier, ou dépose une photo dans data/manual/."
+ASK_FOR_NOTEBOOK = ("demande une fiche avec des photos de son cahier (Demander une fiche, "
+                    "Ajouter des photos du cours).")
 
 
 # ----------------------------------------------------------------------------- inputs

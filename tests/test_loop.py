@@ -298,7 +298,7 @@ def test_a_wrong_answer_on_a_version_just_promoted_alerts_once(conn, langfuse_la
 def test_a_change_of_model_is_noted_once(conn, monkeypatch):
     from skoolathome.agent import config
 
-    assert set(changes.record_config(conn)) == {"engine", "generator", "judge", "embedder"}
+    assert set(changes.record_config(conn)) == {"engine", "generator", "judge", "vision", "embedder"}
     assert changes.record_config(conn) == []
     real = config.load()
     other = config.Config(real.engine, {**real.models, "generator": config.Model(**{

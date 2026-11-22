@@ -16,7 +16,7 @@ from skoolathome.publish.nip46 import NIP98_KIND, authorization_header, nip98_ta
 from skoolathome.schema.explanation import ExplanationAnswer
 from skoolathome.schema.home import Home
 from skoolathome.schema.instruction import InstructionUpdate, PublishedRule
-from skoolathome.schema.request import RequestUpdate
+from skoolathome.schema.request import RequestUpdate, Transcription
 from skoolathome.schema.review import WeeklyReview
 from skoolathome.schema.sheet import Sheet
 
@@ -57,6 +57,10 @@ class ApiClient:
 
     def _call(self, method: str, path: str, payload: dict | None = None, params: dict | None = None,
               *, content: bytes | None = None, content_type: str = "application/json") -> dict:
+        return self._send(method, path, payload, params, content=content, content_type=content_type).json()
+
+    def _send(self, method: str, path: str, payload: dict | None = None, params: dict | None = None,
+              *, content: bytes | None = None, content_type: str = "application/json") -> httpx.Response:
         # The signed URL and body must be exactly the ones sent: build them once, use them twice.
         url = self.base_url + path + (f"?{urlencode(params)}" if params else "")
         if content is not None:
@@ -77,7 +81,7 @@ class ApiClient:
             except ValueError:
                 detail = response.text
             raise ApiError(response.status_code, str(detail)[:500])
-        return response.json()
+        return response
 
     def publish(self, sheets: list[Sheet], requests: list[RequestUpdate] | None = None, *,
                 instructions: list[InstructionUpdate] | None = None,
@@ -110,14 +114,22 @@ class ApiClient:
         return self._call("POST", f"/api/agent/explanations/{explanation_id}", answer.model_dump(mode="json"))
 
     def queue(self) -> dict:
-        """What waits online: {"explanations": [...], "requests": [ids]}. An API deployed before
-        the queue only has the explanations."""
+        """What waits online: {"explanations": [...], "requests": [ids], "photos": [{id, photos}]}.
+        An API deployed before the queue only has the explanations; before the photos, none."""
         try:
-            return self._call("GET", "/api/agent/queue")
+            return {"photos": [], **self._call("GET", "/api/agent/queue")}
         except ApiError as error:
             if error.status != 404:
                 raise
-            return {"explanations": self.pending_explanations(), "requests": []}
+            return {"explanations": self.pending_explanations(), "requests": [], "photos": []}
+
+    def request_photo(self, request_id: str, position: int) -> bytes:
+        """A photo of the notebook sent with a request, in JPEG."""
+        return self._send("GET", f"/api/agent/requests/{request_id}/photos/{position}").content
+
+    def request_pages(self, request_id: str, transcription: Transcription) -> dict:
+        """What was read on the photos: the API deletes them and asks the parent to check the text."""
+        return self._call("POST", f"/api/agent/requests/{request_id}/pages", transcription.model_dump(mode="json"))
 
     def missing_documents(self, sha256: list[str]) -> list[str]:
         return self._call("POST", "/api/agent/documents/missing", {"sha256": sha256})["missing"]

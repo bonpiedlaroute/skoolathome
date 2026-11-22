@@ -54,10 +54,10 @@ def save(conn: psycopg.Connection, data: dict, student_id: str | None = None) ->
             ).rowcount
         for r in data.get("requests", []):
             counts["requests"] += conn.execute(
-                "INSERT INTO agent.requests (id, student_id, subject_code, kind, focus, items, minutes, origin, "
-                "created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, 'pwa', %s) ON CONFLICT (id) DO NOTHING",
+                "INSERT INTO agent.requests (id, student_id, subject_code, kind, focus, items, minutes, pages, "
+                "origin, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pwa', %s) ON CONFLICT (id) DO NOTHING",
                 (r["id"], student_id, r["subject"], r["kind"], r.get("focus", ""), r.get("items"), r.get("minutes"),
-                 r["created_at"]),
+                 Jsonb(r.get("pages") or []), r["created_at"]),
             ).rowcount
         for a in data.get("attempts", []):
             counts["attempts"] += conn.execute(

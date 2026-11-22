@@ -26,6 +26,20 @@ temperature = 0.0
 max_tokens = 1024
 reasoning_effort = "none"  # Qwen 3.5 thinks by default: off, it would cost minutes for nothing
 
+[vision]
+# Reads the photos of the notebook sent with a request (the course as written in class). The
+# same model as the generator, which reads images. On the processor only: on this laptop's
+# Intel graphics, encoding an image crashes the driver (vk::DeviceLost, every time, measured on
+# 2026-11-22) and leaves Ollama unable to answer until the model is unloaded. About 2 to 3.5
+# minutes per photo of 1024 pixels.
+model = "ministral-3:8b-instruct-2512-q4_K_M"
+family = "mistral"
+quantization = "Q4_K_M"
+temperature = 0.0
+max_tokens = 1500
+num_gpu = 0
+context = 8192
+
 # Turns lessons and document pages into vectors, to find the pages of a lesson (T18).
 # Multilingual, good in French. 1024 dimensions: the size of material.chunks.embedding.
 [embedder]

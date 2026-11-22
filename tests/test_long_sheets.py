@@ -3,10 +3,13 @@ badly built or refused left out one by one, the next attempt completing those ke
 
 from __future__ import annotations
 
+import itertools
+
+from test_guards import CHOICE, NUMBER, item
+
 from skoolathome.agent import draft, guards, making, prompts
 from skoolathome.agent.draft import DraftSheet
 from skoolathome.agent.llm import ModelError
-from test_guards import CHOICE, NUMBER, item
 
 LESSONS = {
     f"lesson:2026-11-{day}:MATHS": (
@@ -26,7 +29,8 @@ BAD_BLANKS = item(type="fill_blank", prompt="Un nombre ___ a ___ diviseurs.", an
 
 
 class Generator:
-    """Answers each call with the next reply: a DraftSheet, or an Exception to raise."""
+    """Answers each call with the next reply: a DraftSheet, a function making one (new questions
+    at each call), or an Exception to raise. The last reply answers every call after it."""
 
     def __init__(self, *replies) -> None:
         self.replies = list(replies)
@@ -35,15 +39,26 @@ class Generator:
     def structured(self, role, messages, schema, callbacks):
         self.asked.append(messages[-1]["content"])
         reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        reply = reply() if callable(reply) else reply
         if isinstance(reply, Exception):
             raise reply
         return reply
 
 
-def part(count: int, *extra: dict) -> DraftSheet:
-    questions = [item(prompt=f"Question {n} : comment appelle-t-on un nombre qui a exactement deux diviseurs ?")
-                 for n in range(count)]
-    return DraftSheet.model_validate({"title": "Préparer le contrôle", "items": questions + list(extra)})
+FACTORS = itertools.count(2)
+
+
+def calculation() -> dict:
+    """A question never asked before in the test run: other numbers make another exercise."""
+    a, b = next(FACTORS), next(FACTORS)
+    return item(type="number", prompt=f"Calcule {a} × {b}.", quote="on le divise successivement par 2, puis 3, puis 5",
+                answer=str(a * b), variants=[], expression=f"{a} * {b}")
+
+
+def part(count: int, *extra: dict):
+    """A part of `count` new questions at each call."""
+    return lambda: DraftSheet.model_validate({"title": "Préparer le contrôle",
+                                              "items": [calculation() for _ in range(count)] + list(extra)})
 
 
 def test_45_minutes_are_18_questions_written_in_three_parts_one_lesson_set_each():
@@ -70,7 +85,8 @@ def test_a_question_badly_built_or_a_part_lost_does_not_lose_the_sheet():
     again = Generator(part(7))
     completed = making.write(again, PROMPT, TASK, LESSONS, {}, "", settled.failures, "t", settled.kept)
     assert len(again.asked) == 2 and len(completed.sheet.items) == 18  # 7 missing: two parts
-    assert "q1 :" not in again.asked[0] and "Question 0" in again.asked[0]  # no stale numbers, no repeats
+    first = written.sheet.items[0].prompt
+    assert "q1 :" not in again.asked[0] and first in again.asked[0]  # no stale numbers, listed to avoid repeats
 
 
 def test_the_refused_questions_are_left_out_when_enough_remain():
@@ -98,3 +114,21 @@ def test_a_short_sheet_keeps_its_old_rules():
     # A quiz has a fixed shape: any problem sends it back whole.
     quiz = making.settle(written.sheet, [refused], {**short, "kind": "quick_quiz"}, 5, last=False)
     assert quiz.sheet is None and quiz.kept is None
+
+
+def test_a_question_asked_again_by_another_part_is_left_out():
+    """Seen in a 45-minute English sheet: three questions three times each, the end reworded."""
+    tourist = item(type="open", prompt="Imagine que tu es un touriste à New York City. Écris 3 phrases en anglais "
+                                       "pour décrire ce que tu vois. Utilise : 1. un verbe de goût 2. look.",
+                   answer="I love the skyline.", variants=[])
+    again = {**tourist, "prompt": "Imagine que tu es un touriste à New York City. Écris 3 phrases en anglais pour "
+                                  "décrire ce que tu vois et ce que tu ressens. Utilise au moins un verbe de goût."}
+    model = Generator(part(5, tourist), part(4, again, NUMBER), part(5, NUMBER))  # three parts of six
+    written = making.write(model, PROMPT, TASK, LESSONS, {}, "", [], "t")
+    prompts = [i.prompt for i in written.sheet.items]
+    assert prompts.count(tourist["prompt"]) == 1 and again["prompt"] not in prompts
+    assert prompts.count(NUMBER["prompt"]) == 1 and len(prompts) == 16
+    assert sum("déjà dans la fiche" in d for d in written.dropped) == 2
+    # The same calculation with other numbers is another exercise.
+    assert not making.repeated(draft.to_item(1, DraftSheet.model_validate({"title": "t", "items": [calculation()]}).items[0], LESSONS),
+                               written.sheet.items)

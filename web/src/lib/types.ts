@@ -147,9 +147,19 @@ export interface SheetRequest {
   items: number | null;
   minutes?: number | null; // how long the parent wanted it
   created_at: string;
-  status: "pending" | "done" | "abstained";
+  // With photos of the notebook: photos (being sent) → reading (by the laptop) → to_review (by the
+  // parent) → pending (the sheet is being written) → done or abstained.
+  status: "photos" | "reading" | "to_review" | "pending" | "done" | "abstained";
   sheet_id: string | null;
   reason: string;
+  photos?: number;
+  pages?: PhotoPage[] | null; // the text read on each photo
+}
+
+/** What the laptop read on one photo, or why it could not. */
+export interface PhotoPage {
+  text: string;
+  problem: string;
 }
 
 /** The weekly review (T24): indicators, alerts first, and the sheets to annotate. */

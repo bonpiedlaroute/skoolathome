@@ -1136,13 +1136,23 @@ def cmd_explain(args: argparse.Namespace) -> int:
         if problem:
             print(problem)
             return 1
+        say = lambda m: print(f"{datetime.now():%H:%M}  {m}", flush=True)  # noqa: E731
         with sessions() as client:
             waiting = client.queue()
-            done = explain.process(_connect, client, llm.Models(), waiting=waiting["explanations"],
-                                   progress=lambda m: print(f"{datetime.now():%H:%M}  {m}", flush=True))
+            done = explain.process(_connect, client, llm.Models(), waiting=waiting["explanations"], progress=say)
+        read = 0
+        if waiting["photos"]:  # before the sheets: the parent checks the text while they are written
+            from skoolathome.agent import photos
+
+            say(f"Photos du cahier à lire : {sum(r['photos'] for r in waiting['photos'])} "
+                f"(environ 3 minutes chacune, sur le processeur).")
+            with sessions() as client:
+                read = photos.process(client, waiting["photos"], progress=say)
         made = _make_requested(sessions, waiting["requests"])
     if args.verbose or done:
         print(f"{len(done)} explication(s) traitée(s).")
+    if args.verbose or read:
+        print(f"{read} demande(s) avec photos lue(s), à relire par le parent.")
     if args.verbose or made:
         print(f"{made} demande(s) de fiche traitée(s).")
     return 0
@@ -1649,7 +1659,8 @@ def cmd_llm_bench(args: argparse.Namespace) -> int:
     from skoolathome.agent import bench, config, tracing
 
     conf = config.load()
-    roles = [(role, m) for role, m in conf.models.items() if m.max_tokens]  # not the embedder
+    # Not the embedder; not the photo reader either, the same model as the generator on the processor.
+    roles = [(role, m) for role, m in conf.models.items() if m.max_tokens and role != "vision"]
     if args.model:  # Ollama models by name, as in T14: measured, not kept
         roles = [("", config.Model(role="", model=name, family="", quantization="")) for name in args.model]
     print(f"Moteur : {conf.engine.name}\n" + bench.HEADER)

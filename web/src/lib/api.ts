@@ -50,7 +50,28 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
 
+/** A file as it is (a photo of the notebook): not JSON. */
+async function upload<T>(path: string, body: Blob, type: string): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "content-type": type },
+    body,
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = (await response.json()).detail ?? detail;
+    } catch {
+      // not JSON: keep the status text
+    }
+    throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return (await response.json()) as T;
+}
+
 const sheetPath = (id: string) => `/sheets/${encodeURIComponent(id)}`;
+const requestPath = (id: string) => `/requests/${encodeURIComponent(id)}`;
 
 export const api = {
   me: () => call<Device>("GET", "/me"),
@@ -68,8 +89,12 @@ export const api = {
   pushSubscribe: (subscription: PushSubscriptionJSON) => call<{ ok: boolean }>("POST", "/push/subscription", subscription),
   pushTest: () => call<{ sent: number; failed: number }>("POST", "/push/test"),
   requests: () => call<SheetRequest[]>("GET", "/requests"),
-  createRequest: (subject: string, kind: RequestKind, focus: string, minutes: number | null) =>
-    call<SheetRequest>("POST", "/requests", { subject, kind, focus, minutes }),
+  createRequest: (subject: string, kind: RequestKind, focus: string, minutes: number | null, photos = 0) =>
+    call<SheetRequest>("POST", "/requests", { subject, kind, focus, minutes, photos }),
+  uploadPhoto: (id: string, position: number, photo: Blob) =>
+    upload<SheetRequest>(`${requestPath(id)}/photos/${position}`, photo, "image/jpeg"),
+  reviewPages: (id: string, pages: string[]) => call<SheetRequest>("POST", `${requestPath(id)}/pages`, { pages }),
+  cancelRequest: (id: string) => call<SheetRequest>("POST", `${requestPath(id)}/cancel`, {}),
   hideSheet: (id: string) => call<void>("DELETE", sheetPath(id)),
   restoreSheet: (id: string) => call<{ ok: boolean }>("POST", `${sheetPath(id)}/restore`),
   instructions: () => call<Instruction[]>("GET", "/instructions"),

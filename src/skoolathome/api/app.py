@@ -35,7 +35,7 @@ from skoolathome.schema.instruction import (
     NewInstruction,
     PublishedRule,
 )
-from skoolathome.schema.request import NewRequest, RequestUpdate
+from skoolathome.schema.request import NewRequest, RequestUpdate, ReviewedPages, Transcription
 from skoolathome.schema.review import Annotation, WeeklyReview
 from skoolathome.schema.sheet import Sheet
 
@@ -443,22 +443,29 @@ def finish_sheet(
 
 def _request_json(row) -> dict:
     return {"id": row[0], "subject": row[1], "kind": row[2], "focus": row[3], "items": row[4],
-            "created_at": row[5], "status": row[6], "sheet_id": row[7], "reason": row[8], "minutes": row[9]}
+            "created_at": row[5], "status": row[6], "sheet_id": row[7], "reason": row[8], "minutes": row[9],
+            "photos": row[10], "pages": row[11]}
 
 
-_REQUEST_COLUMNS = "id, subject, kind, focus, items, created_at, status, sheet_id, reason, minutes"
+_REQUEST_COLUMNS = "id, subject, kind, focus, items, created_at, status, sheet_id, reason, minutes, photos, pages"
+# Not made yet: the home page does not suggest asking for the same subject again.
+WAITING_STATUSES = ("photos", "reading", "to_review", "pending")
+PHOTO_MAX_BYTES = 2_000_000  # the PWA sends 1024 pixels in JPEG: about 200 KB
+PHOTO_DAYS = 7               # a photo never read (laptop off) is not kept longer
 
 
 @app.post("/api/requests", status_code=201)
 def create_request(
     body: NewRequest, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)
 ) -> dict:
-    """A sheet asked for by the parent: made at the laptop's next run."""
+    """A sheet asked for by the parent: made at the laptop's next run. With photos of the notebook,
+    it waits for them, then for the laptop to read them and the parent to check the text."""
     row = conn.execute(
-        "INSERT INTO sheet_requests (id, subject, kind, focus, items, minutes, created_by) "
-        f"VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_REQUEST_COLUMNS}",
+        "INSERT INTO sheet_requests (id, subject, kind, focus, items, minutes, photos, status, ready_at, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE now() END, %s) "
+        f"RETURNING {_REQUEST_COLUMNS}",
         (f"pwa-{secrets.token_hex(6)}", body.subject, body.kind, body.focus.strip(), body.items, body.minutes,
-         device.id),
+         body.photos, "photos" if body.photos else "pending", bool(body.photos), device.id),
     ).fetchone()
     return _request_json(row)
 
@@ -467,6 +474,113 @@ def create_request(
 def list_requests(device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn)) -> list[dict]:
     rows = conn.execute(f"SELECT {_REQUEST_COLUMNS} FROM sheet_requests ORDER BY created_at DESC LIMIT 20").fetchall()
     return [_request_json(row) for row in rows]
+
+
+def _waiting_request(conn: psycopg.Connection, request_id: str, status: str) -> tuple:
+    row = conn.execute("SELECT status, photos FROM sheet_requests WHERE id = %s FOR UPDATE", (request_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "unknown request")
+    if row[0] != status:
+        raise HTTPException(409, f"the request is {row[0]}, not {status}")
+    return row
+
+
+@app.put("/api/requests/{request_id}/photos/{position}")
+async def put_request_photo(
+    request_id: str, position: int, request: Request, device: Device = Depends(parent_device),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """One photo of the notebook, in JPEG (the PWA makes it 1024 pixels). Sent again, it replaces
+    the first one. The last one announced hands the request to the laptop."""
+    if request.headers.get("content-type", "").split(";")[0].strip() != "image/jpeg":
+        raise HTTPException(415, "a photo is sent as image/jpeg")
+    content = await request.body()
+    if len(content) > PHOTO_MAX_BYTES:
+        raise HTTPException(413, "photo too large")
+    if not content.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(422, "not a JPEG image")
+    with conn.transaction():
+        _, photos = _waiting_request(conn, request_id, "photos")
+        if not 1 <= position <= photos:
+            raise HTTPException(422, f"photo {position} of {photos}")
+        conn.execute("INSERT INTO request_photos (request_id, position, body) VALUES (%s, %s, %s) "
+                     "ON CONFLICT (request_id, position) DO UPDATE SET body = EXCLUDED.body, received_at = now()",
+                     (request_id, position, content))
+        received = conn.execute("SELECT count(*) FROM request_photos WHERE request_id = %s", (request_id,)).fetchone()[0]
+        status = "reading" if received >= photos else "photos"
+        row = conn.execute(f"UPDATE sheet_requests SET status = %s WHERE id = %s RETURNING {_REQUEST_COLUMNS}",
+                           (status, request_id)).fetchone()
+    return _request_json(row)
+
+
+@app.post("/api/requests/{request_id}/pages")
+def review_request_pages(
+    request_id: str, body: ReviewedPages, device: Device = Depends(parent_device),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """The text of the photos, checked and corrected by the parent: the sheet is written from it."""
+    with conn.transaction():
+        _waiting_request(conn, request_id, "to_review")
+        read = conn.execute("SELECT pages FROM sheet_requests WHERE id = %s", (request_id,)).fetchone()[0] or []
+        if len(body.pages) != len(read):
+            raise HTTPException(422, f"{len(read)} pages expected")
+        pages = [{**page, "text": text} for page, text in zip(read, body.pages, strict=True)]
+        row = conn.execute(
+            "UPDATE sheet_requests SET pages = %s, status = 'pending', ready_at = now() WHERE id = %s "
+            f"RETURNING {_REQUEST_COLUMNS}", (Jsonb(pages), request_id),
+        ).fetchone()
+    return _request_json(row)
+
+
+@app.post("/api/requests/{request_id}/cancel")
+def cancel_request(
+    request_id: str, device: Device = Depends(parent_device), conn: psycopg.Connection = Depends(get_conn),
+) -> dict:
+    """A request with photos given up before the sheet is written: its photos are deleted. Once
+    pending, the laptop may already be writing it: too late."""
+    with conn.transaction():
+        row = conn.execute(
+            "UPDATE sheet_requests SET status = 'abstained', reason = 'Annulée.', handled_at = now() "
+            f"WHERE id = %s AND status IN ('photos', 'reading', 'to_review') RETURNING {_REQUEST_COLUMNS}",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(409, "only a request waiting for its photos or their review can be cancelled")
+        conn.execute("DELETE FROM request_photos WHERE request_id = %s", (request_id,))
+    return _request_json(row)
+
+
+@app.get("/api/agent/requests/{request_id}/photos/{position}")
+def get_request_photo(request_id: str, position: int, agent: nip98.Agent = Depends(nip98.require_agent),
+                      conn: psycopg.Connection = Depends(get_conn)) -> Response:
+    """A photo for the laptop to read."""
+    row = conn.execute("SELECT body FROM request_photos WHERE request_id = %s AND position = %s",
+                       (request_id, position)).fetchone()
+    if row is None:
+        raise HTTPException(404, "unknown photo")
+    return Response(content=bytes(row[0]), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/agent/requests/{request_id}/pages")
+def put_request_pages(request_id: str, body: Transcription, agent: nip98.Agent = Depends(nip98.require_agent),
+                      conn: psycopg.Connection = Depends(get_conn)) -> dict:
+    """What the laptop read on the photos: the photos are deleted, the parent checks the text."""
+    with conn.transaction():
+        row = conn.execute(
+            "UPDATE sheet_requests SET pages = %s, status = 'to_review' WHERE id = %s AND status = 'reading' "
+            "RETURNING subject", (Jsonb([page.model_dump() for page in body.pages]), request_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(409, "no request waiting for its photos to be read")
+        conn.execute("DELETE FROM request_photos WHERE request_id = %s", (request_id,))
+    unread = sum(1 for page in body.pages if page.problem)
+    push.send(conn, {
+        "title": "Révisions : photos lues, à relire",
+        "body": f"{row[0]} : vérifie le texte des photos avant que la fiche soit écrite"
+                + (f" ({unread} photo(s) mal lue(s))" if unread else "") + ".",
+        "url": "/#/requests", "tag": f"request-{request_id}",
+    }, roles=("parent",))
+    return {"ok": True}
 
 
 # -------------------------------------------------------------- instructions (T21)
@@ -603,10 +717,14 @@ def explanation_helped(
 def agent_queue(agent: nip98.Agent = Depends(nip98.require_agent),
                 conn: psycopg.Connection = Depends(get_conn)) -> dict:
     """What waits for the laptop, in one signed call every few minutes: the explanations to write,
-    and the sheets the parent asked for (made at once, without waiting for the evening)."""
+    the sheets the parent asked for (made at once, without waiting for the evening), and the photos
+    of the notebook to read."""
     requests_waiting = [r[0] for r in conn.execute(
         "SELECT id FROM sheet_requests WHERE status = 'pending' ORDER BY created_at LIMIT 20").fetchall()]
-    return {"explanations": pending_explanations(agent, conn), "requests": requests_waiting}
+    conn.execute("DELETE FROM request_photos WHERE received_at < now() - make_interval(days => %s)", (PHOTO_DAYS,))
+    to_read = [{"id": r[0], "photos": r[1]} for r in conn.execute(
+        "SELECT id, photos FROM sheet_requests WHERE status = 'reading' ORDER BY created_at LIMIT 5").fetchall()]
+    return {"explanations": pending_explanations(agent, conn), "requests": requests_waiting, "photos": to_read}
 
 
 @app.get("/api/agent/explanations")
@@ -684,7 +802,7 @@ def get_home(device: Device = Depends(current_device), conn: psycopg.Connection 
                                 "answered": sum(1 for p in progress if p["solo_done"] or p["rating"]),
                                 "correct": sum(1 for p in progress if p["solo_right"] or p["rating"] == "good")}
     requested = [r[0] for r in conn.execute(
-        "SELECT DISTINCT subject FROM sheet_requests WHERE status = 'pending'").fetchall()]
+        "SELECT DISTINCT subject FROM sheet_requests WHERE status = ANY(%s)", (list(WAITING_STATUSES),)).fetchall()]
     files = sorted(_home_files(body))
     documents = {}
     if files:
@@ -1027,9 +1145,10 @@ def feedback(
         f"WHERE {received('r.created_at')} ORDER BY r.id",
         window,
     ).fetchall()
+    # From when the request is ready: at once, or once the parent has checked the text of its photos.
     requests = conn.execute(
-        f"SELECT id, subject, kind, focus, items, created_at, minutes FROM sheet_requests WHERE {received('created_at')} "
-        "ORDER BY created_at",
+        "SELECT id, subject, kind, focus, items, created_at, minutes, pages FROM sheet_requests "
+        f"WHERE {received('ready_at')} ORDER BY ready_at",
         window,
     ).fetchall()
     finishes = conn.execute(
@@ -1076,7 +1195,7 @@ def feedback(
         ],
         "requests": [
             {"id": r[0], "subject": r[1], "kind": r[2], "focus": r[3], "items": r[4], "created_at": r[5],
-             "minutes": r[6]}
+             "minutes": r[6], "pages": [page["text"] for page in r[7] or [] if page.get("text", "").strip()]}
             for r in requests
         ],
         "instructions": [{"id": r[0], "text": r[1], "rule": r[2], "created_at": r[3]} for r in instructions],

@@ -256,8 +256,8 @@ def test_a_lesson_without_text_is_not_sent_to_the_model(conn, url):
     models = FakeModels()
     [result] = run(url, models, lesson_ids=["m1"]).results
     assert result["status"] == "abstained"
-    assert result["reason"] == ("Rien de saisi pour le cours du vendredi 13/11 : demande-lui son cahier, "
-                                "ou dépose une photo dans data/manual/.")
+    assert result["reason"] == ("Rien de saisi pour le cours du vendredi 13/11 : demande une fiche avec des "
+                                "photos de son cahier (Demander une fiche, Ajouter des photos du cours).")
     assert models.prompts == []
 
 
@@ -288,7 +288,8 @@ def test_the_evening_says_what_it_is_doing(conn, url):
     assert [m for m in said if m.startswith(task) and "…" not in m][:4] == [
         f"{task} : fiche écrite en 0 s, 3 questions", f"{task} : garde-fous OK (3 questions)",
         f"{task} : renvoyée par le correcteur (q1 : (correcteur) la question parle d'autre chose que la citation)",
-        f"{task} : fiche écrite en 0 s, 3 questions"]
+        # The same three questions again: the two kept ones are not asked twice.
+        f"{task} : fiche écrite en 0 s, 3 questions (2 écartée(s) à l'écriture)"]
     assert f"{task} : écriture, essai 2, 1 questions à ajouter aux 2 retenues…" in said
 
 
@@ -541,6 +542,23 @@ def test_a_request_made_on_the_pwa_is_answered_in_the_batch(conn, url):
     assert answered["pwa-3d4e5f"]["status"] == "abstained" and "Rien en SVT" in answered["pwa-3d4e5f"]["reason"]
     assert conn.execute("SELECT count(*) FROM agent.requests WHERE reported_at IS NULL").fetchone()[0] == 0
     assert api.reports == []  # a requests-only run does not replace the evening's report
+
+
+def test_the_photos_of_the_notebook_are_the_first_source_of_a_request(conn, url):
+    """The lesson in École Directe is only an agenda; the course is in the photos the parent sent."""
+    add_lesson(conn, "m1", "MATHS", "Correction des exercices 12 à 15 p. 34, puis activité GeoGebra en classe.")
+    api = FakeApi(feedback={"since": 0, "until": 9, "attempts": [], "reports": [], "finishes": [], "requests": [
+        {"id": "pwa-photo1", "subject": "MATHS", "kind": "extra", "focus": "", "items": None,
+         "created_at": "2026-11-13T18:00:00+00:00", "pages": [MATHS]}]})
+    models = FakeModels()
+    evening = run(url, models, api=api, publish=True, only_requests=True)
+    assert statuses(evening) == [("2026-11-13-maths-pwa-photo1", "published")]
+    prompt = models.prompts[0][1][-1]["content"]
+    cours = prompt.rsplit("<cours>", 1)[1]
+    assert cours.index("[photo:pwa-photo1:1]") < cours.index("[lesson:2026-11-13:MATHS]")
+    assert "Le parent a envoyé des photos du cahier (sources [photo:pwa-photo1:1])" in prompt
+    stored = conn.execute("SELECT body FROM agent.sheets WHERE id = '2026-11-13-maths-pwa-photo1'").fetchone()[0]
+    assert stored["source_labels"]["photo:pwa-photo1:1"] == "ta photo du cahier"
 
 
 # ------------------------------------------------------------- instructions (T21)

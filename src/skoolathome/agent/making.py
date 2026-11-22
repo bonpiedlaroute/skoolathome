@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import math
 import re
-
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
+from rapidfuzz import fuzz
 
 from skoolathome.agent import draft, formats, guards, judge, tracing
 from skoolathome.agent.llm import ModelError
@@ -39,7 +39,38 @@ def format_reason(error: Exception) -> str:
 PART_ITEMS = 6      # questions asked in one call: a long sheet is written in several parts
 KEEP_SHARE = 0.7    # a sheet keeps going with 70 % of the questions asked, the others left out
 MAX_LISTED = 30     # questions already written, listed so that the next part asks others
+SHARED_SOURCE = "photo:"  # the notebook's photos sent with a request: given to every part
 ITEM_REASON = re.compile(r"^(q\d+) : ")  # a check about one question, not the whole sheet
+SAME_QUESTION = 85      # rapidfuzz ratio of two wordings: above, the same question asked again
+SAME_OPENING = 95       # the same first sentence…
+OPENING_CHARS = 40      # …long enough not to be a mere « Complète la phrase. »
+RELATED = 60            # …and the rest close enough: the same task, another example at the end
+NUMBERS = re.compile(r"\d+")
+SENTENCE_END = re.compile(r"(?<=[.?!:])\s")
+
+
+def _opening(wording: str) -> str:
+    return SENTENCE_END.split(wording, maxsplit=1)[0]
+
+
+def _same(item: Item, other: Item) -> bool:
+    if item.type != other.type:
+        return False
+    if item.type in ("number", "fraction") and NUMBERS.findall(item.prompt) != NUMBERS.findall(other.prompt):
+        return False  # the same calculation with other numbers: another exercise
+    a, b = guards.flat(item.prompt), guards.flat(other.prompt)
+    if fuzz.ratio(a, b) >= SAME_QUESTION:
+        return True
+    start, other_start = guards.flat(_opening(item.prompt)), guards.flat(_opening(other.prompt))
+    return (min(len(start), len(other_start)) >= OPENING_CHARS and fuzz.ratio(start, other_start) >= SAME_OPENING
+            and fuzz.ratio(a, b) >= RELATED)
+
+
+def repeated(item: Item, earlier: list[Item]) -> bool:
+    """The same question already in the sheet: the parts of a long sheet, or a completion, ask
+    it again although the prompt lists the questions written (seen in a 45-minute English sheet:
+    three questions three times each, the end of the wording changed)."""
+    return any(_same(item, other) for other in earlier)
 
 
 @dataclass
@@ -71,13 +102,15 @@ def parts(wanted: int, sources: dict[str, str]) -> list[tuple[int, dict[str, str
     if wanted <= 0:
         return []
     count = math.ceil(wanted / PART_ITEMS)
-    keys = list(sources)
     if count == 1:
         return [(wanted, sources)]
+    # The photos of the notebook are the course itself: every part reads them.
+    shared = [key for key in sources if key.startswith(SHARED_SOURCE)]
+    keys = [key for key in sources if key not in shared]
     if len(keys) >= count:
-        groups = [keys[index::count] for index in range(count)]
+        groups = [shared + keys[index::count] for index in range(count)]
     else:
-        groups = [keys] * count
+        groups = [shared + keys] * count
     chosen = [{key: sources[key] for key in group} for group in groups]
     return list(zip(_shares(wanted, [chars(group) for group in chosen]), chosen))
 
@@ -151,8 +184,12 @@ def write(models: Any, prompt: Prompt, task: dict, sources: dict[str, str], labe
             dropped.append(format_reason(error))
             continue
         items, reasons = draft.to_items(written.items, sources)
-        new += items
         dropped += reasons
+        for item in items:
+            if repeated(item, previous + new):
+                dropped.append(f"question « {item.prompt[:60]} » écartée : elle est déjà dans la fiche")
+            else:
+                new.append(item)
         title = title or written.title
     if previous:
         new = new[:max(0, asked - len(previous))]  # completing: no more than the questions missing

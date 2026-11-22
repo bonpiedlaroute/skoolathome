@@ -30,6 +30,8 @@ class Model:
     dimensions: int | None = None  # embedding models only
     base_url: str | None = None    # its own server (llama.cpp: one model per server); else the engine's
     engine: str | None = None      # its own engine's name, e.g. the embedder left on Ollama (T30)
+    num_gpu: int | None = None     # layers on the graphics card; 0: the processor only (Ollama)
+    context: int | None = None     # the context window asked of Ollama, in tokens
 
     def url(self, engine: Engine) -> str:
         return self.base_url or engine.base_url
